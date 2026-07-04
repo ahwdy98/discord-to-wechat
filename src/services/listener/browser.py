@@ -49,6 +49,7 @@ class BrowserManager:
     def _init_remote_chrome(self, remote_url: str, options: Options) -> webdriver.Remote:
         if self.headless_mode:
             options.add_argument('--headless=new')
+            logger.info("   使用无头模式运行，noVNC 中不会显示浏览器窗口")
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--user-data-dir=/home/seluser/discord-chrome-data')
         options.add_argument('--profile-directory=Default')

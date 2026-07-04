@@ -59,58 +59,52 @@ class FeishuSender(MessageSender):
 
     def login(self) -> bool:
         """
-        验证飞书 Webhook 是否可用。
+        初始化飞书 Webhook 配置。
+
+        飞书自定义机器人没有不发送消息的健康检查接口；启动阶段只做本地配置校验，
+        避免容器重启时反复向群里发送“初始化成功”消息。
         """
         logger.info("\n" + "=" * 50)
         logger.info("正在初始化飞书自定义机器人...")
         logger.info("=" * 50)
 
-        targets_to_test = []
-        if self._is_configured_hook(self.webhook_url):
-            targets_to_test.append({"hook": self.webhook_url, "secret": self.secret})
-
-        for config in self.webhook_configs:
-            hook = config.get("hook", "")
-            if self._is_configured_hook(hook):
-                targets_to_test.append(
-                    {
-                        "hook": hook,
-                        "secret": config.get("secret", self.secret),
-                    }
-                )
-
-        unique_targets = []
-        seen = set()
-        for target in targets_to_test:
-            marker = (target["hook"], target.get("secret", ""))
-            if marker not in seen:
-                unique_targets.append(target)
-                seen.add(marker)
+        unique_targets = self._get_unique_targets()
 
         if not unique_targets:
             logger.error("请先在 config.py 中配置 FEISHU_WEBHOOK 或 FEISHU_WEBHOOK_LIST")
             logger.error("提示：在飞书群中添加自定义机器人后，复制 Webhook 地址")
             return False
 
-        success_count = 0
-        total_count = len(unique_targets)
-        logger.info(f"正在验证 {total_count} 个飞书 Webhook 地址...")
+        logger.info(f"已配置 {len(unique_targets)} 个飞书 Webhook")
+        logger.info("飞书 Webhook 将在收到 Discord 新消息时发送")
+        self.is_ready = True
+        return True
 
-        for i, target in enumerate(unique_targets, 1):
-            content = f"飞书机器人初始化成功 ({i}/{total_count})\nDiscord 消息桥接器已启动"
-            if self._post_text(target["hook"], target.get("secret", ""), content):
-                logger.info(f"飞书 Webhook {i} 连接成功")
-                success_count += 1
-            else:
-                logger.error(f"飞书 Webhook {i} 连接失败")
+    def _get_unique_targets(self) -> List[Dict[str, str]]:
+        """返回去重后的飞书 Webhook 配置。保留给后续主动健康检查使用。"""
+        targets = []
+        if self._is_configured_hook(self.webhook_url):
+            targets.append({"hook": self.webhook_url, "secret": self.secret})
 
-        if success_count > 0:
-            logger.info(f"成功连接 {success_count}/{total_count} 个飞书机器人 Webhook")
-            self.is_ready = True
-            return True
+        for config in self.webhook_configs:
+            hook = config.get("hook", "")
+            if self._is_configured_hook(hook):
+                targets.append(
+                    {
+                        "hook": hook,
+                        "secret": config.get("secret", self.secret),
+                    }
+                )
 
-        logger.error("所有飞书 Webhook 连接均失败")
-        return False
+        unique_targets: List[Dict[str, str]] = []
+        seen = set()
+        for target in targets:
+            marker = (target["hook"], target.get("secret", ""))
+            if marker not in seen:
+                unique_targets.append(target)
+                seen.add(marker)
+
+        return unique_targets
 
     def get_webhook_for_channel(self, channel_url: str) -> Optional[Dict[str, str]]:
         """根据 Discord 频道 URL 获取对应的飞书 Webhook 配置。"""
