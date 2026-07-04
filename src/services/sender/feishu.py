@@ -12,6 +12,7 @@ import hmac
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 import requests
 from dateutil import parser
@@ -131,8 +132,8 @@ class FeishuSender(MessageSender):
             logger.warning(f"未找到频道 [{message.channel_name}] 对应的飞书 Webhook 配置，且无默认 Webhook")
             return False
 
-        content = self._format_text_message(message)
-        if self._post_text(target["hook"], target.get("secret", ""), content):
+        payload = self._build_post_payload(message)
+        if self._post_payload(target["hook"], target.get("secret", ""), payload):
             logger.info(f"消息已发送到飞书: {message.content[:30]}...")
             return True
 
@@ -147,14 +148,7 @@ class FeishuSender(MessageSender):
         """清理资源。"""
         logger.info("   飞书发送器已清理")
 
-    def _post_text(self, webhook_url: str, secret: str, content: str) -> bool:
-        payload = {
-            "msg_type": "text",
-            "content": {
-                "text": content,
-            },
-        }
-
+    def _post_payload(self, webhook_url: str, secret: str, payload: Dict) -> bool:
         if secret:
             payload.update(self._build_signature(secret))
 
@@ -175,22 +169,69 @@ class FeishuSender(MessageSender):
         logger.error(f"飞书 Webhook 返回失败: {result}")
         return False
 
-    def _format_text_message(self, message: DiscordMessage) -> str:
+    def _build_post_payload(self, message: DiscordMessage) -> Dict:
         bj_time_str = self._format_beijing_time(message.timestamp)
 
-        content = f"来自 {message.username} 的消息\n"
+        rows = [
+            [{"tag": "text", "text": f"来自 {message.username} 的消息"}],
+        ]
         if message.channel_name:
-            content += f"频道: {message.channel_name}\n"
-        content += f"时间: {bj_time_str}\n"
-        content += "----------------\n"
-        content += f"{message.content}\n"
+            rows.append([{"tag": "text", "text": f"频道: {message.channel_name}"}])
+        rows.append([{"tag": "text", "text": f"时间: {bj_time_str}"}])
+        rows.append([{"tag": "text", "text": "----------------"}])
+
+        for line in self._split_text_lines(message.content, len(message.attachments)):
+            rows.append([{"tag": "text", "text": line}])
 
         if message.attachments:
-            content += f"\n附件({len(message.attachments)}):\n"
+            rows.append([{"tag": "text", "text": f"附件({len(message.attachments)}):"}])
             for i, attachment in enumerate(message.attachments[:3], 1):
-                content += f"{i}. {attachment}\n"
+                rows.append(
+                    [
+                        {"tag": "text", "text": f"{i}. "},
+                        {
+                            "tag": "a",
+                            "text": self._format_attachment_label(attachment, i),
+                            "href": attachment,
+                        },
+                    ]
+                )
 
-        return content
+        return {
+            "msg_type": "post",
+            "content": {
+                "post": {
+                    "zh_cn": {
+                        "title": "Discord 新消息",
+                        "content": rows,
+                    }
+                }
+            },
+        }
+
+    @staticmethod
+    def _split_text_lines(content: str, attachment_count: int = 0) -> List[str]:
+        placeholder = f"[附件 {attachment_count} 个]"
+        if attachment_count and (content or "").strip() == placeholder:
+            return []
+
+        lines = [line.strip() for line in (content or "").splitlines()]
+        lines = [line for line in lines if line]
+        return lines or ([] if attachment_count else ["[空消息]"])
+
+    @staticmethod
+    def _format_attachment_label(url: str, index: int) -> str:
+        parsed = urlparse(url)
+        filename = unquote(parsed.path.rsplit("/", 1)[-1])
+        lower_filename = filename.lower()
+
+        if any(lower_filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+            return f"查看图片 {index}"
+        if any(lower_filename.endswith(ext) for ext in [".mp4", ".mov", ".webm"]):
+            return f"查看视频 {index}"
+        if filename:
+            return f"查看附件 {index} ({filename})"
+        return f"查看附件 {index}"
 
     @staticmethod
     def _format_beijing_time(timestamp) -> str:
