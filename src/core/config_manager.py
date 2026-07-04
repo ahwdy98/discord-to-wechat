@@ -12,6 +12,9 @@ class Config:
         self.wechat_receiver_name: str = ""
         self.enterprise_wechat_webhook: str = ""
         self.enterprise_wechat_webhook_list: List[Dict[str, str]] = []
+        self.feishu_webhook: str = ""
+        self.feishu_secret: str = ""
+        self.feishu_webhook_list: List[Dict[str, str]] = []
         self.check_interval: int = 3
         self.headless_mode: bool = False
         
@@ -34,6 +37,9 @@ class Config:
                 self.wechat_receiver_name = getattr(config_module, 'WECHAT_RECEIVER_NAME', '')
                 self.enterprise_wechat_webhook = getattr(config_module, 'ENTERPRISE_WECHAT_WEBHOOK', '')
                 self.enterprise_wechat_webhook_list = getattr(config_module, 'ENTERPRISE_WECHAT_WEBHOOK_LIST', [])
+                self.feishu_webhook = getattr(config_module, 'FEISHU_WEBHOOK', '')
+                self.feishu_secret = getattr(config_module, 'FEISHU_SECRET', '')
+                self.feishu_webhook_list = getattr(config_module, 'FEISHU_WEBHOOK_LIST', [])
                 self.check_interval = getattr(config_module, 'CHECK_INTERVAL', 3)
                 self.headless_mode = getattr(config_module, 'HEADLESS_MODE', False)
         except Exception as e:

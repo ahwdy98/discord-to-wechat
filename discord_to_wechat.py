@@ -21,6 +21,7 @@ from src.services.listener.discord_listener import DiscordListener
 from src.services.sender.base import MessageSender
 from src.services.sender.wechat import WechatSender
 from src.services.sender.working_wechat import WorkingWechatSender
+from src.services.sender.feishu import FeishuSender
 
 # 初始化日志
 logger = setup_logger()
@@ -70,10 +71,26 @@ class DiscordToWechatBridge:
                 webhook_url=self.config.enterprise_wechat_webhook,
                 webhook_configs=self.config.enterprise_wechat_webhook_list
             )
+
+        elif sender_type == "feishu":
+            logger.info("🚀 使用发送方式: 飞书自定义机器人")
+
+            has_list_config = self.config.feishu_webhook_list and len(self.config.feishu_webhook_list) > 0
+            has_single_config = self.config.feishu_webhook and "YOUR_WEBHOOK" not in self.config.feishu_webhook
+
+            if not has_list_config and not has_single_config:
+                logger.error("❌ 请先在 config.py 中配置 FEISHU_WEBHOOK_LIST 或 FEISHU_WEBHOOK")
+                raise ValueError("飞书Webhook未配置")
+
+            return FeishuSender(
+                webhook_url=self.config.feishu_webhook,
+                secret=self.config.feishu_secret,
+                webhook_configs=self.config.feishu_webhook_list
+            )
         
         else:
             logger.error(f"❌ 不支持的发送器类型: {sender_type}")
-            logger.error("   支持的类型: wechat, enterprise_wechat")
+            logger.error("   支持的类型: wechat, enterprise_wechat, feishu")
             raise ValueError(f"不支持的发送器类型: {sender_type}")
     
     def _on_new_message(self, message: DiscordMessage):
@@ -151,7 +168,7 @@ def validate_config():
         logger.error("❌ 请先在 config.py 中配置 DISCORD_CHANNEL_URLS")
         return False
     
-    if app_config.sender_type not in ["wechat", "enterprise_wechat"]:
+    if app_config.sender_type not in ["wechat", "enterprise_wechat", "feishu"]:
         logger.error(f"❌ SENDER_TYPE 配置错误: {app_config.sender_type}")
         return False
     
@@ -166,6 +183,14 @@ def validate_config():
         
         if not valid_list and not valid_single:
             logger.error("❌ 请先在 config.py 中配置 ENTERPRISE_WECHAT_WEBHOOK_LIST 或 ENTERPRISE_WECHAT_WEBHOOK")
+            return False
+
+    elif app_config.sender_type == "feishu":
+        valid_list = app_config.feishu_webhook_list and len(app_config.feishu_webhook_list) > 0
+        valid_single = app_config.feishu_webhook and "YOUR_WEBHOOK" not in app_config.feishu_webhook
+
+        if not valid_list and not valid_single:
+            logger.error("❌ 请先在 config.py 中配置 FEISHU_WEBHOOK_LIST 或 FEISHU_WEBHOOK")
             return False
     
     return True
@@ -189,6 +214,14 @@ def print_startup_info():
         else:
              webhook = app_config.enterprise_wechat_webhook
              logger.info(f"🔗 Webhook: {webhook[:30] if webhook else ''}...")
+    elif app_config.sender_type == "feishu":
+        logger.info("🚀 发送方式: 飞书自定义机器人")
+
+        if app_config.feishu_webhook_list:
+             logger.info(f"🔗 已配置 {len(app_config.feishu_webhook_list)} 个飞书Webhook映射")
+        else:
+             webhook = app_config.feishu_webhook
+             logger.info(f"🔗 Feishu Webhook: {webhook[:30] if webhook else ''}...")
     
     # Discord频道信息
     logger.info(f"\n📋 监控 {len(app_config.discord_channel_urls)} 个Discord频道")

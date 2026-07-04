@@ -1,6 +1,6 @@
 ## Discord to WeChat
 
-Discord 消息转发工具，支持转发到微信个人号或企业微信群机器人。
+Discord 消息转发工具，支持转发到微信个人号、企业微信群机器人或飞书群自定义机器人。
 
 ## 快速开始
 
@@ -15,9 +15,31 @@ cp config.example.py config.py
 编辑 `config.py`：
 
 - 添加 Discord 频道 URL 到 `DISCORD_CHANNEL_URLS`
-- 选择发送方式 `SENDER_TYPE`（`wechat` 或 `enterprise_wechat`）
+- 选择发送方式 `SENDER_TYPE`（`wechat`、`enterprise_wechat` 或 `feishu`）
 - 如使用企业微信，填写 `ENTERPRISE_WECHAT_WEBHOOK` 或 `ENTERPRISE_WECHAT_WEBHOOK_LIST`
+- 如使用飞书，填写 `FEISHU_WEBHOOK` 或 `FEISHU_WEBHOOK_LIST`；如果飞书机器人开启了签名校验，填写 `FEISHU_SECRET`
 - 如使用微信个人号，填写 `WECHAT_RECEIVER_NAME`
+
+飞书单群配置示例：
+
+```python
+SENDER_TYPE = "feishu"
+FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx"
+FEISHU_SECRET = ""  # 未开启签名校验可留空
+```
+
+飞书多群映射示例：
+
+```python
+SENDER_TYPE = "feishu"
+FEISHU_WEBHOOK_LIST = [
+    {
+        "hook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx",
+        "channel": "https://discord.com/channels/服务器ID/频道ID",
+        "secret": ""
+    }
+]
+```
 
 ### 2. 启动方式（3种）
 
@@ -172,6 +194,7 @@ docker compose restart
 - 首次登录后，Discord 会话会持久化保存
 - 监控间隔可在 `config.py` 中的 `CHECK_INTERVAL` 调整
 - 微信个人号需要扫码登录（建议使用小号转发到大号）
+- 飞书机器人使用自定义机器人 Webhook，支持可选签名校验
 
 ## 目录结构
 

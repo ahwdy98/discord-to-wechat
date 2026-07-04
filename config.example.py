@@ -2,7 +2,8 @@
 # 可选值:
 #   "wechat"             - 微信个人号（需要小号扫码登录，发送给大号）
 #   "enterprise_wechat"  - 企业微信机器人（使用Webhook，发送到企业微信群）
-SENDER_TYPE = "enterprise_wechat"  # 默认使用微信个人号
+#   "feishu"             - 飞书自定义机器人（使用Webhook，发送到飞书群）
+SENDER_TYPE = "enterprise_wechat"  # 可改为 wechat / enterprise_wechat / feishu
 
 # Discord配置
 # 可以配置多个频道URL，程序会轮询监听所有频道
@@ -33,6 +34,32 @@ ENTERPRISE_WECHAT_WEBHOOK_LIST = [
     # {
     #     'hook': 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=yyyyy',
     #     'channel': 'https://discord.com/channels/123456789/123456789'
+    # }
+]
+
+
+# 飞书自定义机器人配置（当 SENDER_TYPE = "feishu" 时使用）
+# 获取方式：
+# 1. 在飞书群中，点击群设置 -> 群机器人 -> 添加机器人 -> 自定义机器人
+# 2. 复制机器人的 Webhook 地址到下方
+# 3. 如果机器人开启了“签名校验”，填写 FEISHU_SECRET
+
+# 单个Webhook，所有频道消息都发到这里
+FEISHU_WEBHOOK = ""
+FEISHU_SECRET = ""
+
+# 多Webhook映射，不同Discord频道发到不同飞书群
+# 格式: [{'hook': 'Webhook地址', 'channel': 'Discord频道URL', 'secret': '签名密钥，可选'}]
+FEISHU_WEBHOOK_LIST = [
+    # {
+    #     'hook': 'https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx',
+    #     'channel': 'https://discord.com/channels/123456789/987654321',
+    #     'secret': ''
+    # },
+    # {
+    #     'hook': 'https://open.feishu.cn/open-apis/bot/v2/hook/yyyyy',
+    #     'channel': 'https://discord.com/channels/123456789/123456789',
+    #     'secret': '对应机器人的签名密钥'
     # }
 ]
 
