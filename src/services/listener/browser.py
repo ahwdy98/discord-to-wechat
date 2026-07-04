@@ -50,6 +50,7 @@ class BrowserManager:
         if self.headless_mode:
             options.add_argument('--headless=new')
             logger.info("   使用无头模式运行，noVNC 中不会显示浏览器窗口")
+        self._configure_common_chrome_options(options)
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--user-data-dir=/home/seluser/discord-chrome-data')
         options.add_argument('--profile-directory=Default')
@@ -72,13 +73,25 @@ class BrowserManager:
             return self.driver
         except Exception as e:
             logger.error(f"   连接远程 Selenium 失败: {e}")
+            error_text = str(e)
+            if "Chrome instance exited" in error_text or "session not created" in error_text:
+                logger.error("   提示：Chrome 可能因 selenium_data 权限、锁文件或残留会话启动失败")
+                logger.error("   可尝试执行: bash bash/init_selenium.sh && docker compose restart")
             raise
 
     def _configure_local_options(self, options: Options):
         if self.headless_mode:
             options.add_argument('--headless=new')
             logger.info("   使用无头模式运行")
-            
+
+        self._configure_common_chrome_options(options)
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--user-data-dir=./chrome_data')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        options.add_experimental_option('useAutomationExtension', False)
+
+    def _configure_common_chrome_options(self, options: Options):
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -87,11 +100,6 @@ class BrowserManager:
         options.add_argument('--no-zygote')
         options.add_argument('--disable-features=VizDisplayCompositor,UseOzonePlatform')
         options.add_argument('--remote-debugging-port=9222')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--user-data-dir=./chrome_data')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option('excludeSwitches', ['enable-automation'])
-        options.add_experimental_option('useAutomationExtension', False)
 
     def _init_system_chromedriver(self, options: Options) -> webdriver.Chrome:
         try:
