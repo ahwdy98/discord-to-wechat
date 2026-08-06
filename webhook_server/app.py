@@ -615,6 +615,24 @@ def query_messages(params: Dict[str, List[str]]) -> Dict[str, Any]:
     }
 
 
+def list_message_channels() -> List[Dict[str, Any]]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                channel_url,
+                COALESCE(MAX(NULLIF(channel_name, '')), '') AS channel_name,
+                COUNT(*) AS message_count,
+                MAX(created_at) AS latest_created_at
+            FROM messages
+            GROUP BY channel_url
+            ORDER BY MAX(created_at) DESC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
 def get_message(message_id: int) -> Optional[Dict[str, Any]]:
     with db_connect() as conn:
         row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
@@ -801,7 +819,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 def render_messages_page(result: Dict[str, Any], params: Dict[str, List[str]]) -> str:
     q = html.escape(first_param(params, "q", ""))
     token = html.escape(first_param(params, "token", ""))
+    selected_channel_url = first_param(params, "channel_url", "").strip()
     token_input = f'<input type="hidden" name="token" value="{token}">' if token else ""
+    channel_options = render_channel_options(selected_channel_url)
     cards = "\n".join(render_message_card(message) for message in result["messages"])
     if not cards:
         cards = '<div class="empty">暂无消息</div>'
@@ -817,8 +837,10 @@ def render_messages_page(result: Dict[str, Any], params: Dict[str, List[str]]) -
     body {{ margin: 0; background: #f6f7f9; color: #20242a; }}
     header {{ position: sticky; top: 0; background: #ffffff; border-bottom: 1px solid #dde1e7; padding: 14px 22px; z-index: 1; }}
     h1 {{ margin: 0 0 10px; font-size: 20px; }}
-    form {{ display: flex; gap: 8px; max-width: 760px; }}
-    input {{ flex: 1; padding: 9px 11px; border: 1px solid #c8ced8; border-radius: 6px; font-size: 14px; }}
+    form {{ display: flex; gap: 8px; max-width: 980px; flex-wrap: wrap; }}
+    input, select {{ padding: 9px 11px; border: 1px solid #c8ced8; border-radius: 6px; font-size: 14px; background: #ffffff; }}
+    input {{ flex: 1 1 320px; min-width: 180px; }}
+    select {{ flex: 0 1 360px; min-width: 220px; }}
     button {{ padding: 9px 14px; border: 1px solid #1f6feb; background: #1f6feb; color: white; border-radius: 6px; cursor: pointer; }}
     main {{ max-width: 980px; margin: 18px auto; padding: 0 16px 36px; }}
     .summary {{ color: #5a6472; margin-bottom: 12px; }}
@@ -841,6 +863,9 @@ def render_messages_page(result: Dict[str, Any], params: Dict[str, List[str]]) -
     <form method="get" action="/messages">
       {token_input}
       <input name="q" value="{q}" placeholder="搜索内容、用户或频道">
+      <select name="channel_url" title="按频道筛选">
+        {channel_options}
+      </select>
       <button type="submit">搜索</button>
     </form>
   </header>
@@ -850,6 +875,31 @@ def render_messages_page(result: Dict[str, Any], params: Dict[str, List[str]]) -
   </main>
 </body>
 </html>"""
+
+
+def render_channel_options(selected_channel_url: str) -> str:
+    options = [
+        '<option value="">全部频道</option>'
+    ]
+    selected_found = not selected_channel_url
+    for channel in list_message_channels():
+        channel_url = str(channel.get("channel_url") or "")
+        channel_name = str(channel.get("channel_name") or "").strip()
+        count = int(channel.get("message_count") or 0)
+        label = channel_name or channel_url.rsplit("/", 1)[-1] or channel_url
+        if count:
+            label = f"{label} ({count})"
+        selected = " selected" if channel_url == selected_channel_url else ""
+        if selected:
+            selected_found = True
+        safe_url = html.escape(channel_url, quote=True)
+        safe_label = html.escape(label)
+        safe_title = html.escape(channel_url, quote=True)
+        options.append(f'<option value="{safe_url}" title="{safe_title}"{selected}>{safe_label}</option>')
+    if selected_channel_url and not selected_found:
+        safe_url = html.escape(selected_channel_url, quote=True)
+        options.append(f'<option value="{safe_url}" selected>{safe_url}</option>')
+    return "\n".join(options)
 
 
 def render_message_card(message: Dict[str, Any]) -> str:

@@ -3,7 +3,7 @@
 独立的 Discord 消息接收服务，提供：
 
 - `POST /webhook/messages` 接收消息并写入 SQLite
-- `GET /messages` Web 页面查看消息
+- `GET /messages` Web 页面查看消息，支持搜索和频道筛选
 - `GET /api/messages` JSON 查询消息
 - `GET /api/messages/{id}` 查询单条消息
 - `GET /api/health` 健康检查
@@ -59,6 +59,7 @@ curl -X POST http://localhost:8080/webhook/messages \
 
 ```bash
 curl "http://localhost:8080/api/messages?limit=20&offset=0&q=hello"
+curl "http://localhost:8080/api/messages?channel_url=https://discord.com/channels/server/channel"
 curl "http://localhost:8080/api/messages/1"
 ```
 
