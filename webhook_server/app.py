@@ -178,7 +178,7 @@ def normalize_message(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def insert_message(payload: Dict[str, Any]) -> Tuple[int, bool]:
+def insert_message(payload: Dict[str, Any]) -> Tuple[int, bool, bool]:
     data = normalize_message(payload)
     with db_connect() as conn:
         cursor = conn.execute(
@@ -203,16 +203,46 @@ def insert_message(payload: Dict[str, Any]) -> Tuple[int, bool]:
 
         inserted = cursor.rowcount > 0
         if inserted:
-            return int(cursor.lastrowid), True
+            return int(cursor.lastrowid), True, False
 
         existing = conn.execute(
             """
-            SELECT id FROM messages
+            SELECT id, username, content, timestamp, channel_name, attachments_json, raw_json
+            FROM messages
             WHERE discord_message_id = ? AND channel_url = ?
             """,
             (data["discord_message_id"], data["channel_url"]),
         ).fetchone()
-        return int(existing["id"]), False
+        message_id = int(existing["id"])
+        changed = any(
+            str(existing[field] or "") != str(data[field] or "")
+            for field in ["username", "content", "timestamp", "channel_name", "attachments_json", "raw_json"]
+        )
+        if changed:
+            conn.execute(
+                """
+                UPDATE messages
+                SET username = ?,
+                    content = ?,
+                    timestamp = ?,
+                    channel_name = ?,
+                    attachments_json = ?,
+                    raw_json = ?,
+                    created_at = ?
+                WHERE id = ?
+                """,
+                (
+                    data["username"],
+                    data["content"],
+                    data["timestamp"],
+                    data["channel_name"],
+                    data["attachments_json"],
+                    data["raw_json"],
+                    data["created_at"],
+                    message_id,
+                ),
+            )
+        return message_id, False, changed
 
 
 def load_forward_routes() -> List[Dict[str, Any]]:
@@ -745,7 +775,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         try:
             payload = self.read_json_body()
-            message_id, inserted = insert_message(payload)
+            message_id, inserted, updated = insert_message(payload)
             forward_ids = []
             if inserted:
                 message = get_message(message_id)
@@ -764,6 +794,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "id": message_id,
                 "inserted": inserted,
+                "updated": updated,
                 "forward_count": len(forward_ids),
                 "forward_ids": forward_ids,
             },
