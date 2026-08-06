@@ -6,7 +6,7 @@ Discord消息监听器
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 from src.core.models import DiscordMessage
@@ -55,6 +55,9 @@ class DiscordListener:
         # 为每个频道维护独立的最后消息ID
         self.last_message_ids = {url: None for url in self.channel_urls}
         self.seen_message_keys = set()
+        self.dom_forward_after_utc = None
+        self.dom_startup_quarantine_until = 0
+        self.dom_ignored_old_message_ids = set()
         # 为每个频道维护独立的浏览器标签页句柄（window handle）
         self.channel_handles = {}
     
@@ -138,7 +141,7 @@ class DiscordListener:
                     current_handle = None
 
                 if current_handle != handle:
-                    logger.info("⏳ 正在切换到频道标签页...")
+                    logger.debug("⏳ 正在切换到频道标签页...")
                     # logger.info(f"   URL: {channel_url}")
                     self.driver.switch_to.window(handle)
                     time.sleep(0.1)
@@ -248,7 +251,7 @@ class DiscordListener:
     return "";
   }
 
-  function parseMessage(root) {
+  function parseMessage(root, eventKind) {
     const id = root.getAttribute("id") || "";
     if (!id) return null;
 
@@ -289,6 +292,7 @@ class DiscordListener:
     const timeEl = root.querySelector("time");
     return {
       id: id,
+      eventKind: eventKind || "added",
       username: username,
       content: uniqueContent || (uniqueAttachments.length ? `[Attachment count: ${uniqueAttachments.length}]` : "[No text content]"),
       timestamp: (timeEl && timeEl.getAttribute("datetime")) || new Date().toISOString(),
@@ -301,13 +305,13 @@ class DiscordListener:
   }
 
   function remember(root) {
-    const message = parseMessage(root);
+    const message = parseMessage(root, "baseline");
     if (message) window.__discordDomBridgeSeen[message.id] = signature(message);
   }
 
-  function enqueue(root) {
+  function enqueue(root, eventKind) {
     try {
-      const message = parseMessage(root);
+      const message = parseMessage(root, eventKind);
       if (!message) return;
       const sig = signature(message);
       if (Date.now() < window.__discordDomBridgeBaselineUntil) {
@@ -332,17 +336,23 @@ class DiscordListener:
 
   Array.from(document.querySelectorAll('li[id^="chat-messages-"]')).forEach(remember);
 
-  const pending = new Set();
+  const pending = [];
   let timer = null;
-  function schedule(root) {
+  function schedule(root, eventKind) {
     if (!root) return;
-    pending.add(root);
+    pending.push({ root: root, eventKind: eventKind || "added" });
     if (timer) return;
     timer = setTimeout(function () {
-      const roots = Array.from(pending);
-      pending.clear();
+      const items = pending.splice(0, pending.length);
       timer = null;
-      roots.forEach(enqueue);
+      const latestById = {};
+      for (const item of items) {
+        const id = item.root.getAttribute("id") || "";
+        latestById[id] = item;
+      }
+      Object.values(latestById).forEach(function (item) {
+        enqueue(item.root, item.eventKind);
+      });
     }, 120);
   }
 
@@ -351,15 +361,15 @@ class DiscordListener:
       if (mutation.type === "childList") {
         for (const node of mutation.addedNodes) {
           const root = messageRoot(node);
-          if (root) schedule(root);
+          if (root) schedule(root, "added");
           if (node.querySelectorAll) {
             for (const item of node.querySelectorAll('li[id^="chat-messages-"]')) {
-              schedule(item);
+              schedule(item, "added");
             }
           }
         }
       } else if (mutation.type === "characterData") {
-        schedule(messageRoot(mutation.target));
+        schedule(messageRoot(mutation.target), "updated");
       }
     }
   });
@@ -418,13 +428,22 @@ class DiscordListener:
             return None
         self.seen_message_keys.add(seen_key)
 
-        timestamp = datetime.now()
+        timestamp = datetime.now(timezone.utc)
         timestamp_raw = raw.get("timestamp")
         if timestamp_raw:
             try:
                 timestamp = datetime.fromisoformat(str(timestamp_raw).replace("Z", "+00:00"))
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
             except ValueError:
                 pass
+
+        if self.dom_forward_after_utc and timestamp_raw and timestamp < self.dom_forward_after_utc:
+            event_kind = str(raw.get("eventKind") or "added")
+            in_quarantine = time.monotonic() < self.dom_startup_quarantine_until
+            if event_kind != "updated" or in_quarantine:
+                self.dom_ignored_old_message_ids.add(message_id)
+                return None
 
         return DiscordMessage(
             id=message_id,
@@ -439,6 +458,14 @@ class DiscordListener:
     def _monitor_messages_dom_queue(self):
         channel_errors = {url: 0 for url in self.channel_urls}
         max_errors = 5
+        if self.dom_forward_after_utc is None:
+            grace_seconds = max(2, float(self.check_interval or 1) * 2)
+            self.dom_forward_after_utc = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+            self.dom_startup_quarantine_until = time.monotonic() + 60
+            logger.info(
+                "DOM event monitor will ignore historical added messages before "
+                f"{self.dom_forward_after_utc.isoformat()}"
+            )
 
         while True:
             for channel_idx, channel_url in enumerate(self.channel_urls):
