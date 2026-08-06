@@ -1,3 +1,5 @@
 ./chrome_data
+./selenium_data
+./webhook_server/data
 ./logs
 ./config.py

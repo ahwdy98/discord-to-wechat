@@ -3,7 +3,8 @@
 #   "wechat"             - 微信个人号（需要小号扫码登录，发送给大号）
 #   "enterprise_wechat"  - 企业微信机器人（使用Webhook，发送到企业微信群）
 #   "feishu"             - 飞书自定义机器人（使用Webhook，发送到飞书群）
-SENDER_TYPE = "enterprise_wechat"  # 可改为 wechat / enterprise_wechat / feishu
+#   "webhook_server"     - 自建Webhook服务端（写入SQLite，提供Web/API查看）
+SENDER_TYPE = "enterprise_wechat"  # 可改为 wechat / enterprise_wechat / feishu / webhook_server
 
 # Discord配置
 # 可以配置多个频道URL，程序会轮询监听所有频道
@@ -62,6 +63,15 @@ FEISHU_WEBHOOK_LIST = [
     #     'secret': '对应机器人的签名密钥'
     # }
 ]
+
+
+# 自建Webhook服务端配置（当 SENDER_TYPE = "webhook_server" 时使用）
+# Docker Compose 内部访问地址：
+# WEBHOOK_SERVER_URL = "http://webhook-server:8080/webhook/messages"
+# 本机直接运行服务端，或 Linux host 网络模式时可使用：
+# WEBHOOK_SERVER_URL = "http://127.0.0.1:8080/webhook/messages"
+WEBHOOK_SERVER_URL = ""
+WEBHOOK_SERVER_TOKEN = ""  # 如果 webhook_server 设置了 WEBHOOK_TOKEN，这里填同一个值
 
 
 # 运行配置

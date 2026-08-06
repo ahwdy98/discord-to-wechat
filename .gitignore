@@ -3,4 +3,5 @@ config.py
 .cursorindexingignore
 chrome_data
 selenium_data
+webhook_server/data
 logs/*.log

@@ -15,6 +15,8 @@ class Config:
         self.feishu_webhook: str = ""
         self.feishu_secret: str = ""
         self.feishu_webhook_list: List[Dict[str, str]] = []
+        self.webhook_server_url: str = ""
+        self.webhook_server_token: str = ""
         self.check_interval: int = 3
         self.headless_mode: bool = False
         
@@ -40,6 +42,8 @@ class Config:
                 self.feishu_webhook = getattr(config_module, 'FEISHU_WEBHOOK', '')
                 self.feishu_secret = getattr(config_module, 'FEISHU_SECRET', '')
                 self.feishu_webhook_list = getattr(config_module, 'FEISHU_WEBHOOK_LIST', [])
+                self.webhook_server_url = getattr(config_module, 'WEBHOOK_SERVER_URL', '')
+                self.webhook_server_token = getattr(config_module, 'WEBHOOK_SERVER_TOKEN', '')
                 self.check_interval = getattr(config_module, 'CHECK_INTERVAL', 3)
                 self.headless_mode = getattr(config_module, 'HEADLESS_MODE', False)
         except Exception as e:

@@ -6,6 +6,11 @@ services:
     # host 网络模式下 ports 会被忽略，这里置空避免误导
     ports: []
 
+  webhook-server:
+    network_mode: host
+    # host 网络模式下 ports 会被忽略，服务直接监听宿主机 8080
+    ports: []
+
   discord-to-wechat:
     network_mode: host
     environment:

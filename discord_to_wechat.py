@@ -22,6 +22,7 @@ from src.services.sender.base import MessageSender
 from src.services.sender.wechat import WechatSender
 from src.services.sender.working_wechat import WorkingWechatSender
 from src.services.sender.feishu import FeishuSender
+from src.services.sender.webhook_server import WebhookServerSender
 
 # 初始化日志
 logger = setup_logger()
@@ -87,10 +88,22 @@ class DiscordToWechatBridge:
                 secret=self.config.feishu_secret,
                 webhook_configs=self.config.feishu_webhook_list
             )
+
+        elif sender_type == "webhook_server":
+            logger.info("🗄️ 使用发送方式: 本地 Webhook Server")
+
+            if not self.config.webhook_server_url:
+                logger.error("❌ 请先在 config.py 中配置 WEBHOOK_SERVER_URL")
+                raise ValueError("Webhook Server URL 未配置")
+
+            return WebhookServerSender(
+                endpoint_url=self.config.webhook_server_url,
+                token=self.config.webhook_server_token
+            )
         
         else:
             logger.error(f"❌ 不支持的发送器类型: {sender_type}")
-            logger.error("   支持的类型: wechat, enterprise_wechat, feishu")
+            logger.error("   支持的类型: wechat, enterprise_wechat, feishu, webhook_server")
             raise ValueError(f"不支持的发送器类型: {sender_type}")
     
     def _on_new_message(self, message: DiscordMessage):
@@ -168,7 +181,7 @@ def validate_config():
         logger.error("❌ 请先在 config.py 中配置 DISCORD_CHANNEL_URLS")
         return False
     
-    if app_config.sender_type not in ["wechat", "enterprise_wechat", "feishu"]:
+    if app_config.sender_type not in ["wechat", "enterprise_wechat", "feishu", "webhook_server"]:
         logger.error(f"❌ SENDER_TYPE 配置错误: {app_config.sender_type}")
         return False
     
@@ -191,6 +204,11 @@ def validate_config():
 
         if not valid_list and not valid_single:
             logger.error("❌ 请先在 config.py 中配置 FEISHU_WEBHOOK_LIST 或 FEISHU_WEBHOOK")
+            return False
+
+    elif app_config.sender_type == "webhook_server":
+        if not app_config.webhook_server_url:
+            logger.error("❌ 请先在 config.py 中配置 WEBHOOK_SERVER_URL")
             return False
     
     return True
@@ -222,6 +240,9 @@ def print_startup_info():
         else:
              webhook = app_config.feishu_webhook
              logger.info(f"🔗 Feishu Webhook: {webhook[:30] if webhook else ''}...")
+    elif app_config.sender_type == "webhook_server":
+        logger.info("🗄️ 发送方式: 本地 Webhook Server")
+        logger.info(f"🔗 Webhook Server: {app_config.webhook_server_url}")
     
     # Discord频道信息
     logger.info(f"\n📋 监控 {len(app_config.discord_channel_urls)} 个Discord频道")

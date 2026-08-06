@@ -15,9 +15,10 @@ cp config.example.py config.py
 编辑 `config.py`：
 
 - 添加 Discord 频道 URL 到 `DISCORD_CHANNEL_URLS`
-- 选择发送方式 `SENDER_TYPE`（`wechat`、`enterprise_wechat` 或 `feishu`）
+- 选择发送方式 `SENDER_TYPE`（`wechat`、`enterprise_wechat`、`feishu` 或 `webhook_server`）
 - 如使用企业微信，填写 `ENTERPRISE_WECHAT_WEBHOOK` 或 `ENTERPRISE_WECHAT_WEBHOOK_LIST`
 - 如使用飞书，填写 `FEISHU_WEBHOOK` 或 `FEISHU_WEBHOOK_LIST`；如果飞书机器人开启了签名校验，填写 `FEISHU_SECRET`
+- 如使用自建 Webhook Server，填写 `WEBHOOK_SERVER_URL`
 - 如使用微信个人号，填写 `WECHAT_RECEIVER_NAME`
 
 飞书单群配置示例：
@@ -39,6 +40,20 @@ FEISHU_WEBHOOK_LIST = [
         "secret": ""
     }
 ]
+```
+
+自建 Webhook Server 配置示例：
+
+```python
+SENDER_TYPE = "webhook_server"
+WEBHOOK_SERVER_URL = "http://webhook-server:8080/webhook/messages"  # Docker Compose 内部地址
+WEBHOOK_SERVER_TOKEN = ""  # 如果服务端设置了 WEBHOOK_TOKEN，这里填同一个值
+```
+
+Linux `docker-compose.linux.yml` 的 host 网络模式下，`WEBHOOK_SERVER_URL` 使用：
+
+```python
+WEBHOOK_SERVER_URL = "http://localhost:8080/webhook/messages"
 ```
 
 ### 2. 启动方式（3种）
@@ -160,6 +175,34 @@ docker compose up -d --build
 
 ## 常见问题 (FAQ)
 
+### 0. 自建 Webhook Server 怎么用？
+
+Docker Compose 启动后会同时启动 `webhook-server` 服务：
+
+```bash
+docker compose up -d --build webhook-server
+```
+
+Web 页面：
+
+- `http://localhost:8080/messages`
+
+查询 API：
+
+```bash
+curl "http://localhost:8080/api/messages?limit=20&offset=0"
+curl "http://localhost:8080/api/messages?q=keyword"
+curl "http://localhost:8080/api/messages/1"
+```
+
+写入 API：
+
+```bash
+curl -X POST http://localhost:8080/webhook/messages \
+  -H "Content-Type: application/json" \
+  -d '{"id":"1","username":"tester","content":"hello","channel_url":"https://discord.com/channels/1/2","attachments":[]}'
+```
+
 ### 1. Docker 启动报错 `SessionNotCreatedException: Chrome instance exited`
 
 **场景**：通常发生在**首次登录成功并重启服务后**（即第二次启动时）。
@@ -216,5 +259,6 @@ docker compose up -d --build
 ├── docker-compose.yml     # Docker 配置
 ├── bash/
 │   └── init_selenium.sh   # 初始化脚本
+├── webhook_server/        # 自建Webhook消息存储和查看服务
 └── selenium_data/         # Docker 持久化数据（首次运行后生成）
 ```
