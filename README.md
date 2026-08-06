@@ -50,6 +50,8 @@ WEBHOOK_SERVER_URL = "http://webhook-server:8080/webhook/messages"  # Docker Com
 WEBHOOK_SERVER_TOKEN = ""  # 如果服务端设置了 WEBHOOK_TOKEN，这里填同一个值
 ```
 
+推荐解耦架构：主监听器只采集并写入 Webhook Server，转发到飞书/企业微信由 Webhook Server 的 `FORWARD_ROUTES_JSON` 决定。这样 Discord 只监听一次，同一条消息可以入库后再转发到多个目标，转发状态也会被记录。
+
 Linux `docker-compose.linux.yml` 的 host 网络模式下，`WEBHOOK_SERVER_URL` 使用：
 
 ```python

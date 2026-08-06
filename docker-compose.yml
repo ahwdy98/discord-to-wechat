@@ -29,6 +29,18 @@ services:
       - WEBHOOK_DATA_DIR=/data
       # 可选：设置后写入和查询都需要 Authorization: Bearer <token>
       # - WEBHOOK_TOKEN=change-me
+      # 可选：收到消息后由 webhook-server 统一转发到飞书/企业微信
+      # - FORWARD_WORKERS=2
+      # - >-
+      #   FORWARD_ROUTES_JSON=[
+      #     {
+      #       "channels":["https://discord.com/channels/服务器ID/频道ID"],
+      #       "targets":[
+      #         {"type":"feishu","name":"飞书群","webhook":"https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx","secret":""},
+      #         {"type":"enterprise_wechat","name":"企业微信群","webhook":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx"}
+      #       ]
+      #     }
+      #   ]
     volumes:
       - ./webhook_server/data:/data
     ports:

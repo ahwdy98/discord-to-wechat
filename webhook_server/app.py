@@ -10,14 +10,22 @@ Only Python standard library modules are used so the service is easy to run.
 import html
 import json
 import os
+import base64
+import hashlib
+import hmac
+import queue
 import sqlite3
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import Request, urlopen
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,6 +34,11 @@ DB_PATH = Path(os.getenv("WEBHOOK_DB_PATH", DATA_DIR / "messages.sqlite3"))
 HOST = os.getenv("WEBHOOK_HOST", "0.0.0.0")
 PORT = int(os.getenv("WEBHOOK_PORT", "8080"))
 TOKEN = os.getenv("WEBHOOK_TOKEN", "").strip()
+FORWARD_ROUTES_JSON = os.getenv("FORWARD_ROUTES_JSON", "").strip()
+FORWARD_WORKERS = int(os.getenv("FORWARD_WORKERS", "2"))
+FORWARD_TIMEOUT = int(os.getenv("FORWARD_TIMEOUT", "30"))
+FORWARD_QUEUE: "queue.Queue[int]" = queue.Queue()
+FORWARD_ROUTES: List[Dict[str, Any]] = []
 
 
 def utc_now() -> str:
@@ -55,6 +68,29 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_url ON messages(channel_url)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_username ON messages(username)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS forward_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                route_index INTEGER NOT NULL,
+                target_index INTEGER NOT NULL,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                target_config_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                response_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                sent_at TEXT,
+                UNIQUE(message_id, route_index, target_index)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_forward_message_id ON forward_deliveries(message_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_forward_status ON forward_deliveries(status)")
 
 
 def db_connect() -> sqlite3.Connection:
@@ -126,6 +162,342 @@ def insert_message(payload: Dict[str, Any]) -> Tuple[int, bool]:
         return int(existing["id"]), False
 
 
+def load_forward_routes() -> List[Dict[str, Any]]:
+    if not FORWARD_ROUTES_JSON:
+        return []
+
+    try:
+        routes = json.loads(FORWARD_ROUTES_JSON)
+    except json.JSONDecodeError as e:
+        print(f"Invalid FORWARD_ROUTES_JSON: {e}", file=sys.stderr)
+        return []
+
+    if not isinstance(routes, list):
+        print("Invalid FORWARD_ROUTES_JSON: root value must be a list", file=sys.stderr)
+        return []
+
+    normalized_routes = []
+    for index, route in enumerate(routes):
+        if not isinstance(route, dict):
+            print(f"Ignore invalid forward route #{index}: not an object", file=sys.stderr)
+            continue
+
+        targets = route.get("targets") or []
+        if not isinstance(targets, list) or not targets:
+            print(f"Ignore invalid forward route #{index}: missing targets", file=sys.stderr)
+            continue
+
+        normalized_routes.append(route)
+    return normalized_routes
+
+
+def create_forward_deliveries(message_id: int, message: Dict[str, Any]) -> List[int]:
+    delivery_ids = []
+    now = utc_now()
+
+    for route_index, route in enumerate(FORWARD_ROUTES):
+        if not route_matches_message(route, message):
+            continue
+
+        targets = route.get("targets") or []
+        with db_connect() as conn:
+            for target_index, target in enumerate(targets):
+                if not isinstance(target, dict):
+                    continue
+
+                target_type = str(target.get("type") or target.get("sender_type") or "").strip()
+                if target_type not in ["feishu", "enterprise_wechat"]:
+                    continue
+
+                target_name = str(target.get("name") or f"{target_type}:{route_index}:{target_index}")
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO forward_deliveries (
+                        message_id, route_index, target_index, target_type, target_name,
+                        target_config_json, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        message_id,
+                        route_index,
+                        target_index,
+                        target_type,
+                        target_name,
+                        json.dumps(target, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    delivery_ids.append(int(cursor.lastrowid))
+
+    for delivery_id in delivery_ids:
+        FORWARD_QUEUE.put(delivery_id)
+
+    return delivery_ids
+
+
+def route_matches_message(route: Dict[str, Any], message: Dict[str, Any]) -> bool:
+    channels = route.get("channels")
+    if isinstance(channels, str):
+        channels = [channels]
+    if channels is None and route.get("channel"):
+        channels = [route.get("channel")]
+
+    if not channels:
+        return True
+
+    message_channel = normalize_channel(message.get("channel_url") or "")
+    return any(normalize_channel(channel) == message_channel for channel in channels)
+
+
+def normalize_channel(channel_url: str) -> str:
+    return str(channel_url or "").rstrip("/")
+
+
+def start_forward_workers() -> None:
+    if not FORWARD_ROUTES:
+        return
+
+    for index in range(max(1, FORWARD_WORKERS)):
+        thread = threading.Thread(target=forward_worker_loop, name=f"forward-worker-{index + 1}", daemon=True)
+        thread.start()
+
+    enqueue_pending_deliveries()
+    print(f"Forward routes enabled: {len(FORWARD_ROUTES)}, workers={max(1, FORWARD_WORKERS)}")
+
+
+def enqueue_pending_deliveries() -> None:
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id FROM forward_deliveries
+            WHERE status IN ('pending', 'failed')
+            ORDER BY id ASC
+            LIMIT 500
+            """
+        ).fetchall()
+
+    for row in rows:
+        FORWARD_QUEUE.put(int(row["id"]))
+
+
+def forward_worker_loop() -> None:
+    while True:
+        delivery_id = FORWARD_QUEUE.get()
+        try:
+            process_forward_delivery(delivery_id)
+        except Exception as e:
+            print(f"Forward worker error for delivery {delivery_id}: {e}", file=sys.stderr)
+        finally:
+            FORWARD_QUEUE.task_done()
+
+
+def process_forward_delivery(delivery_id: int) -> None:
+    delivery, message = get_forward_delivery_context(delivery_id)
+    if not delivery or not message:
+        return
+
+    if delivery["status"] == "sent":
+        return
+
+    target_config = json.loads(delivery["target_config_json"] or "{}")
+    mark_delivery_status(delivery_id, "sending")
+
+    try:
+        if delivery["target_type"] == "feishu":
+            response = send_to_feishu(target_config, message)
+        elif delivery["target_type"] == "enterprise_wechat":
+            response = send_to_enterprise_wechat(target_config, message)
+        else:
+            raise ValueError(f"unsupported target type: {delivery['target_type']}")
+
+        mark_delivery_status(delivery_id, "sent", response=response, sent=True)
+    except Exception as e:
+        mark_delivery_status(delivery_id, "failed", error=str(e))
+
+
+def get_forward_delivery_context(delivery_id: int) -> Tuple[Optional[sqlite3.Row], Optional[Dict[str, Any]]]:
+    with db_connect() as conn:
+        delivery = conn.execute("SELECT * FROM forward_deliveries WHERE id = ?", (delivery_id,)).fetchone()
+        if not delivery:
+            return None, None
+        row = conn.execute("SELECT * FROM messages WHERE id = ?", (delivery["message_id"],)).fetchone()
+
+    return delivery, row_to_message(row) if row else None
+
+
+def mark_delivery_status(
+    delivery_id: int,
+    status: str,
+    error: str = "",
+    response: Optional[Dict[str, Any]] = None,
+    sent: bool = False,
+) -> None:
+    now = utc_now()
+    with db_connect() as conn:
+        conn.execute(
+            """
+            UPDATE forward_deliveries
+            SET status = ?,
+                attempts = attempts + CASE WHEN ? IN ('sent', 'failed') THEN 1 ELSE 0 END,
+                last_error = ?,
+                response_json = ?,
+                updated_at = ?,
+                sent_at = CASE WHEN ? THEN ? ELSE sent_at END
+            WHERE id = ?
+            """,
+            (
+                status,
+                status,
+                error or None,
+                json.dumps(response, ensure_ascii=False) if response is not None else None,
+                now,
+                1 if sent else 0,
+                now,
+                delivery_id,
+            ),
+        )
+
+
+def send_to_feishu(target: Dict[str, Any], message: Dict[str, Any]) -> Dict[str, Any]:
+    webhook = str(target.get("webhook") or target.get("hook") or "").strip()
+    if not webhook:
+        raise ValueError("missing feishu webhook")
+
+    payload = build_feishu_payload(message)
+    secret = str(target.get("secret") or "").strip()
+    if secret:
+        payload.update(build_feishu_signature(secret))
+
+    return post_json(webhook, payload)
+
+
+def build_feishu_payload(message: Dict[str, Any]) -> Dict[str, Any]:
+    rows = [
+        [{"tag": "text", "text": f"来自 {message.get('username') or '未知用户'} 的消息"}],
+    ]
+    if message.get("channel_name"):
+        rows.append([{"tag": "text", "text": f"频道: {message.get('channel_name')}"}])
+    if message.get("timestamp"):
+        rows.append([{"tag": "text", "text": f"时间: {message.get('timestamp')}"}])
+    rows.append([{"tag": "text", "text": "----------------"}])
+
+    for line in split_content_lines(message.get("content") or "", len(message.get("attachments") or [])):
+        rows.append([{"tag": "text", "text": line}])
+
+    attachments = message.get("attachments") or []
+    if attachments:
+        rows.append([{"tag": "text", "text": f"附件({len(attachments)}):"}])
+        for index, attachment in enumerate(attachments[:5], 1):
+            rows.append(
+                [
+                    {"tag": "text", "text": f"{index}. "},
+                    {"tag": "a", "text": attachment_label(str(attachment), index), "href": str(attachment)},
+                ]
+            )
+
+    return {
+        "msg_type": "post",
+        "content": {
+            "post": {
+                "zh_cn": {
+                    "title": "Discord 新消息",
+                    "content": rows,
+                }
+            }
+        },
+    }
+
+
+def build_feishu_signature(secret: str) -> Dict[str, str]:
+    timestamp = str(int(time.time()))
+    string_to_sign = f"{timestamp}\n{secret}"
+    digest = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+    return {
+        "timestamp": timestamp,
+        "sign": base64.b64encode(digest).decode("utf-8"),
+    }
+
+
+def send_to_enterprise_wechat(target: Dict[str, Any], message: Dict[str, Any]) -> Dict[str, Any]:
+    webhook = str(target.get("webhook") or target.get("hook") or "").strip()
+    if not webhook:
+        raise ValueError("missing enterprise_wechat webhook")
+
+    content = build_enterprise_wechat_markdown(message)
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "content": content,
+        },
+    }
+    return post_json(webhook, payload)
+
+
+def build_enterprise_wechat_markdown(message: Dict[str, Any]) -> str:
+    content = f"来自 **{message.get('username') or '未知用户'}** 的消息\n"
+    if message.get("channel_name"):
+        content += f"> 频道: {message.get('channel_name')}\n"
+    if message.get("timestamp"):
+        content += f"> 时间: {message.get('timestamp')}\n\n"
+
+    lines = split_content_lines(message.get("content") or "", len(message.get("attachments") or []))
+    content += "\n".join(lines) if lines else ""
+
+    attachments = message.get("attachments") or []
+    if attachments:
+        content += f"\n\n**附件({len(attachments)}):**\n"
+        for index, attachment in enumerate(attachments[:5], 1):
+            label = attachment_label(str(attachment), index)
+            content += f"{index}. [{label}]({attachment})\n"
+
+    return content
+
+
+def split_content_lines(content: str, attachment_count: int = 0) -> List[str]:
+    placeholder = f"[附件 {attachment_count} 个]"
+    if attachment_count and (content or "").strip() == placeholder:
+        return []
+
+    lines = [line.strip() for line in (content or "").splitlines()]
+    lines = [line for line in lines if line]
+    return lines or ([] if attachment_count else ["[空消息]"])
+
+
+def post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=FORWARD_TIMEOUT) as response:
+            response_body = response.read().decode("utf-8")
+    except HTTPError as e:
+        response_body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code}: {response_body[:300]}") from e
+    except URLError as e:
+        raise RuntimeError(f"network error: {e}") from e
+
+    try:
+        result = json.loads(response_body or "{}")
+    except json.JSONDecodeError:
+        result = {"raw": response_body}
+
+    if not is_success_response(result):
+        raise RuntimeError(f"target returned failure: {result}")
+
+    return result
+
+
+def is_success_response(result: Dict[str, Any]) -> bool:
+    return result.get("code") == 0 or result.get("StatusCode") == 0 or result.get("errcode") == 0
+
+
 def row_to_message(row: sqlite3.Row) -> Dict[str, Any]:
     message = dict(row)
     try:
@@ -176,18 +548,57 @@ def query_messages(params: Dict[str, List[str]]) -> Dict[str, Any]:
             [*values, limit, offset],
         ).fetchall()
 
+    messages = [row_to_message(row) for row in rows]
+    attach_forward_statuses(messages)
+
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
-        "messages": [row_to_message(row) for row in rows],
+        "messages": messages,
     }
 
 
 def get_message(message_id: int) -> Optional[Dict[str, Any]]:
     with db_connect() as conn:
         row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
-    return row_to_message(row) if row else None
+    if not row:
+        return None
+
+    message = row_to_message(row)
+    attach_forward_statuses([message])
+    return message
+
+
+def attach_forward_statuses(messages: List[Dict[str, Any]]) -> None:
+    if not messages:
+        return
+
+    message_ids = [message["id"] for message in messages]
+    placeholders = ",".join(["?"] * len(message_ids))
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, message_id, target_type, target_name, status, attempts,
+                   last_error, response_json, created_at, updated_at, sent_at
+            FROM forward_deliveries
+            WHERE message_id IN ({placeholders})
+            ORDER BY route_index ASC, target_index ASC
+            """,
+            message_ids,
+        ).fetchall()
+
+    by_message: Dict[int, List[Dict[str, Any]]] = {message_id: [] for message_id in message_ids}
+    for row in rows:
+        delivery = dict(row)
+        try:
+            delivery["response"] = json.loads(delivery.pop("response_json") or "{}")
+        except json.JSONDecodeError:
+            delivery["response"] = {}
+        by_message.setdefault(delivery["message_id"], []).append(delivery)
+
+    for message in messages:
+        message["forwards"] = by_message.get(message["id"], [])
 
 
 def first_param(params: Dict[str, List[str]], key: str, default: str) -> str:
@@ -211,7 +622,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if parsed.path == "/health" or parsed.path == "/api/health":
-            self.send_json({"ok": True, "db_path": str(DB_PATH)})
+            self.send_json({"ok": True, "db_path": str(DB_PATH), "forward_routes": len(FORWARD_ROUTES)})
             return
 
         if not self.authorized(params):
@@ -257,6 +668,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self.read_json_body()
             message_id, inserted = insert_message(payload)
+            forward_ids = []
+            if inserted:
+                message = get_message(message_id)
+                if message:
+                    forward_ids = create_forward_deliveries(message_id, message)
         except ValueError as e:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(e))
             return
@@ -265,7 +681,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         status = HTTPStatus.CREATED if inserted else HTTPStatus.OK
-        self.send_json({"ok": True, "id": message_id, "inserted": inserted}, status=status)
+        self.send_json(
+            {
+                "ok": True,
+                "id": message_id,
+                "inserted": inserted,
+                "forward_count": len(forward_ids),
+                "forward_ids": forward_ids,
+            },
+            status=status,
+        )
 
     def read_json_body(self) -> Dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0") or "0")
@@ -343,6 +768,11 @@ def render_messages_page(result: Dict[str, Any], params: Dict[str, List[str]]) -
     .content {{ white-space: pre-wrap; line-height: 1.55; }}
     .attachments {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #edf0f4; }}
     .attachments a {{ display: inline-block; margin: 3px 8px 3px 0; color: #1f6feb; }}
+    .forwards {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #edf0f4; font-size: 13px; }}
+    .forward {{ display: inline-block; margin: 3px 8px 3px 0; padding: 3px 7px; border-radius: 999px; background: #edf0f4; color: #3d4652; }}
+    .forward.sent {{ background: #e6f4ea; color: #1f7a3f; }}
+    .forward.failed {{ background: #fde8e8; color: #b42318; }}
+    .forward.pending, .forward.sending {{ background: #fff4cc; color: #8a5a00; }}
     .empty {{ background: #ffffff; border: 1px dashed #b7c0cc; border-radius: 8px; padding: 30px; text-align: center; color: #697386; }}
   </style>
 </head>
@@ -374,6 +804,17 @@ def render_message_card(message: Dict[str, Any]) -> str:
             links.append(f'<a href="{safe_url}" target="_blank" rel="noreferrer">{label}</a>')
         attachment_html = f'<div class="attachments">{"".join(links)}</div>'
 
+    forward_html = ""
+    forwards = message.get("forwards") or []
+    if forwards:
+        items = []
+        for forward in forwards:
+            status = html.escape(forward.get("status") or "")
+            name = html.escape(forward.get("target_name") or forward.get("target_type") or "")
+            title = html.escape(forward.get("last_error") or "")
+            items.append(f'<span class="forward {status}" title="{title}">{name}: {status}</span>')
+        forward_html = f'<div class="forwards">{"".join(items)}</div>'
+
     content = html.escape(message.get("content") or "")
     username = html.escape(message.get("username") or "")
     channel = html.escape(message.get("channel_name") or "")
@@ -389,6 +830,7 @@ def render_message_card(message: Dict[str, Any]) -> str:
       </div>
       <div class="content">{content}</div>
       {attachment_html}
+      {forward_html}
     </article>
     """
 
@@ -405,7 +847,10 @@ def attachment_label(url: str, index: int) -> str:
 
 
 def main() -> None:
+    global FORWARD_ROUTES
     init_db()
+    FORWARD_ROUTES = load_forward_routes()
+    start_forward_workers()
     server = ThreadingHTTPServer((HOST, PORT), RequestHandler)
     print(f"Webhook server listening on http://{HOST}:{PORT}")
     print(f"SQLite database: {DB_PATH}")
