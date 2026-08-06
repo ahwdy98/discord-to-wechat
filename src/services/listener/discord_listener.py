@@ -6,6 +6,7 @@ Discord消息监听器
 """
 
 import time
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
@@ -611,10 +612,11 @@ class DiscordListener:
         max_errors = 5
         if self.dom_forward_after_utc is None:
             grace_seconds = max(2, float(self.check_interval or 1) * 2)
-            self.dom_forward_after_utc = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+            recovery_seconds = max(grace_seconds, self._dom_recovery_lookback_seconds())
+            self.dom_forward_after_utc = datetime.now(timezone.utc) - timedelta(seconds=recovery_seconds)
             self.dom_startup_quarantine_until = time.monotonic() + 60
             logger.info(
-                "DOM event monitor will ignore historical added messages before "
+                "DOM event monitor will recover recent messages and ignore older added messages before "
                 f"{self.dom_forward_after_utc.isoformat()}"
             )
 
@@ -653,6 +655,13 @@ class DiscordListener:
                             channel_errors[channel_url] = 0
 
             time.sleep(max(0.1, float(self.check_interval or 0.5)))
+
+    @staticmethod
+    def _dom_recovery_lookback_seconds() -> float:
+        try:
+            return max(0.0, float(os.getenv("DISCORD_DOM_RECOVERY_LOOKBACK_SECONDS", "7200")))
+        except ValueError:
+            return 7200.0
 
     def monitor_messages(self):
         logger.info("Using Discord DOM event observer queues for browser-tabs mode")
