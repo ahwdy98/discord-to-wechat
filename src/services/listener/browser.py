@@ -67,7 +67,7 @@ class BrowserManager:
             options.add_argument('--headless=new')
             logger.info("   使用无头模式运行，noVNC 中不会显示浏览器窗口")
         self._configure_common_chrome_options(options)
-        options.add_argument('--window-size=1920,1080')
+        options.add_argument(f'--window-size={self._chrome_window_size()}')
         options.add_argument('--user-data-dir=/home/seluser/discord-chrome-data')
         options.add_argument('--profile-directory=Default')
 
@@ -113,7 +113,7 @@ class BrowserManager:
             logger.info("   使用无头模式运行")
 
         self._configure_common_chrome_options(options)
-        options.add_argument('--window-size=1920,1080')
+        options.add_argument(f'--window-size={self._chrome_window_size()}')
         options.add_argument('--user-data-dir=./chrome_data')
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
@@ -126,8 +126,27 @@ class BrowserManager:
         options.add_argument('--disable-software-rasterizer')
         options.add_argument('--disable-extensions')
         options.add_argument('--no-zygote')
-        options.add_argument('--disable-features=VizDisplayCompositor,UseOzonePlatform')
+        options.add_argument('--disable-background-networking')
+        options.add_argument('--disable-client-side-phishing-detection')
+        options.add_argument('--disable-component-update')
+        options.add_argument('--disable-default-apps')
+        options.add_argument('--disable-domain-reliability')
+        options.add_argument('--disable-hang-monitor')
+        options.add_argument('--disable-prompt-on-repost')
+        options.add_argument('--disable-sync')
+        options.add_argument('--disable-translate')
+        options.add_argument('--metrics-recording-only')
+        options.add_argument('--process-per-site')
+        options.add_argument(
+            '--disable-features='
+            'VizDisplayCompositor,UseOzonePlatform,MediaRouter,Translate,'
+            'OptimizationHints,InterestFeedContentSuggestions,AutofillServerCommunication'
+        )
         options.add_argument('--remote-debugging-port=0')
+
+        renderer_limit = os.getenv("CHROME_RENDERER_PROCESS_LIMIT", "4").strip()
+        if renderer_limit and renderer_limit != "0":
+            options.add_argument(f"--renderer-process-limit={renderer_limit}")
 
         if self.disable_notifications:
             options.add_argument('--disable-notifications')
@@ -169,6 +188,16 @@ class BrowserManager:
             return max(1, int(os.getenv("CHROME_START_RETRIES", "3")))
         except ValueError:
             return 3
+
+    @staticmethod
+    def _chrome_window_size() -> str:
+        value = os.getenv("CHROME_WINDOW_SIZE", "1280,720").strip()
+        if "x" in value:
+            value = value.replace("x", ",", 1)
+        parts = value.split(",", 1)
+        if len(parts) == 2 and all(part.strip().isdigit() for part in parts):
+            return f"{int(parts[0])},{int(parts[1])}"
+        return "1280,720"
 
     def cleanup(self):
         """清理浏览器资源"""

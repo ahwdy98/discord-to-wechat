@@ -222,6 +222,20 @@ class DiscordListener:
   window.__discordDomBridgeBaselineUntil = Date.now() + 6000;
   window.__discordDomBridgeStats = { queued: 0, ignored: 0, errors: 0, startedAt: Date.now() };
 
+  if (!document.getElementById("__discordDomBridgeReduceMotion")) {
+    const style = document.createElement("style");
+    style.id = "__discordDomBridgeReduceMotion";
+    style.textContent = `
+      *, *::before, *::after {
+        animation-duration: 0.001s !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.001s !important;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
   function messageRoot(node) {
     let el = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
     while (el && el !== document.body) {
