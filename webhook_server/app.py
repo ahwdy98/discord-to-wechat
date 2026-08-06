@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -904,10 +905,27 @@ def render_channel_options(selected_channel_url: str) -> str:
 
 def channel_display_label(channel_name: str, channel_url: str) -> str:
     channel_id = channel_url.rstrip("/").rsplit("/", 1)[-1] if channel_url else ""
-    channel_name = str(channel_name or "").strip()
+    channel_name = clean_channel_name(channel_name)
     if channel_name and channel_id and channel_id not in channel_name:
         return f"{channel_name} · {channel_id}"
     return channel_name or channel_id or channel_url
+
+
+def clean_channel_name(channel_name: str) -> str:
+    text = re.sub(r"\s+", " ", str(channel_name or "")).strip()
+    if not text:
+        return ""
+
+    text = text.replace("::", ":")
+    if ":" in text:
+        server, channel = text.split(":", 1)
+        channel = channel.strip().lstrip("#").strip()
+        channel = channel.strip("\"'").strip()
+        server = server.strip().rstrip(":")
+        return f"{server}: {channel}" if server and channel else channel or server
+
+    text = text.lstrip("#").strip()
+    return text.strip("\"'").strip()
 
 
 def render_message_card(message: Dict[str, Any]) -> str:

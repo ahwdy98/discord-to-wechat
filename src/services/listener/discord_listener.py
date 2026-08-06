@@ -229,11 +229,22 @@ class DiscordListener:
                     .trim();
                 }
 
-                const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
-                if (header) {
-                  const text = clean((header.innerText || header.textContent || "").replace(/\\s*\\n\\s*/g, ": "));
-                  if (text) return text;
+                function fromHeader() {
+                  const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
+                  if (!header) return "";
+                  const lines = (header.innerText || header.textContent || "")
+                    .split("\\n")
+                    .map(clean)
+                    .filter(Boolean);
+                  if (lines.length >= 2) {
+                    const server = lines[0].replace(/:$/, "").trim();
+                    return `${server}: ${lines.slice(1).join(" ")}`;
+                  }
+                  return lines[0] || "";
                 }
+
+                const headerName = fromHeader();
+                if (headerName) return headerName;
 
                 const titleParts = String(document.title || "").split("|").map(part => clean(part));
                 if (titleParts.length >= 2) {
@@ -463,11 +474,22 @@ class DiscordListener:
                 }
 
                 function channelName() {
-                  const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
-                  if (header) {
-                    const text = clean((header.innerText || header.textContent || "").replace(/\\s*\\n\\s*/g, ": "));
-                    if (text) return text;
+                  function fromHeader() {
+                    const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
+                    if (!header) return "";
+                    const lines = (header.innerText || header.textContent || "")
+                      .split("\\n")
+                      .map(clean)
+                      .filter(Boolean);
+                    if (lines.length >= 2) {
+                      const server = lines[0].replace(/:$/, "").trim();
+                      return `${server}: ${lines.slice(1).join(" ")}`;
+                    }
+                    return lines[0] || "";
                   }
+
+                  const headerName = fromHeader();
+                  if (headerName) return headerName;
 
                   const titleParts = String(document.title || "").split("|").map(part => clean(part));
                   if (titleParts.length >= 2) {
