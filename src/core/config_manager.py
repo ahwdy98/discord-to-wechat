@@ -51,6 +51,11 @@ class Config:
                 self.feishu_secret = getattr(config_module, 'FEISHU_SECRET', '')
                 self.feishu_webhook_list = getattr(config_module, 'FEISHU_WEBHOOK_LIST', [])
                 self.webhook_server_url = getattr(config_module, 'WEBHOOK_SERVER_URL', '')
+                if not self.webhook_server_url and self.sender_type == 'webhook_server':
+                    self.webhook_server_url = os.getenv(
+                        'WEBHOOK_SERVER_URL',
+                        'http://webhook-server:8080/webhook/messages'
+                    )
                 self.webhook_server_token = getattr(config_module, 'WEBHOOK_SERVER_TOKEN', '')
                 self.async_send_enabled = getattr(config_module, 'ASYNC_SEND_ENABLED', False)
                 self.send_workers = getattr(config_module, 'SEND_WORKERS', 1)

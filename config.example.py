@@ -104,7 +104,7 @@ FEISHU_WEBHOOK_LIST = [
 # WEBHOOK_SERVER_URL = "http://webhook-server:8080/webhook/messages"
 # 本机直接运行服务端，或 Linux host 网络模式时可使用：
 # WEBHOOK_SERVER_URL = "http://127.0.0.1:8080/webhook/messages"
-WEBHOOK_SERVER_URL = ""
+WEBHOOK_SERVER_URL = "http://webhook-server:8080/webhook/messages"
 WEBHOOK_SERVER_TOKEN = ""  # 如果 webhook_server 设置了 WEBHOOK_TOKEN，这里填同一个值
 
 
