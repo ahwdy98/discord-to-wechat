@@ -5,3 +5,5 @@ chrome_data
 selenium_data
 webhook_server/data
 logs/*.log
+__pycache__/
+*.pyc

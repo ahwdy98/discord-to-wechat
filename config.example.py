@@ -124,3 +124,9 @@ HEADLESS_MODE = False  # 设为True则无头模式（不显示浏览器窗口）
 CHROME_LOAD_IMAGES = True  # 设为False可减少图片加载带来的资源占用；图片附件链接通常仍可提取
 CHROME_DISABLE_NOTIFICATIONS = True
 CHROME_MUTE_AUDIO = True
+
+# Discord listener mode:
+# - "browser_tabs": old stable mode, opens one Discord tab per channel.
+# - "websocket": low-resource realtime mode, opens one Discord page and listens to Gateway frames.
+DISCORD_LISTENER_MODE = "browser_tabs"
+WEBSOCKET_POLL_INTERVAL = 0.2

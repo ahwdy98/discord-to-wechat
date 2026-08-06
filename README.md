@@ -96,6 +96,10 @@ CHROME_MUTE_AUDIO = True
 ASYNC_SEND_ENABLED = True
 SEND_WORKERS = 1
 SEND_QUEUE_SIZE = 1000
+
+# 低资源实时监听：只打开 1 个 Discord 页面，通过 WebSocket 事件收消息
+DISCORD_LISTENER_MODE = "websocket"
+WEBSOCKET_POLL_INTERVAL = 0.2
 ```
 
 说明：`SEND_WORKERS` 对微信个人号建议保持 `1`；企业微信、飞书、自建 webhook 这类 HTTP 发送器可以按需调大。

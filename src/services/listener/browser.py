@@ -18,12 +18,14 @@ class BrowserManager:
         headless_mode: bool = False,
         load_images: bool = True,
         disable_notifications: bool = True,
-        mute_audio: bool = True
+        mute_audio: bool = True,
+        performance_logging: bool = False
     ):
         self.headless_mode = headless_mode
         self.load_images = load_images
         self.disable_notifications = disable_notifications
         self.mute_audio = mute_audio
+        self.performance_logging = performance_logging
         self.driver: Optional[webdriver.Chrome] = None
 
     def init_chrome(self) -> webdriver.Chrome:
@@ -31,6 +33,8 @@ class BrowserManager:
         logger.info("⏳ 正在配置Chrome浏览器...")
         
         chrome_options = Options()
+        if self.performance_logging:
+            chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
         try:
             chrome_options.page_load_strategy = 'eager'
         except Exception:
@@ -53,6 +57,7 @@ class BrowserManager:
             self.driver = self._init_system_chromedriver(chrome_options)
             
         logger.info("✅ Chrome浏览器已成功启动")
+        self._enable_network_monitoring()
         return self.driver
 
     def _init_remote_chrome(self, remote_url: str, options: Options) -> webdriver.Remote:
@@ -78,6 +83,7 @@ class BrowserManager:
         try:
             logger.info(f"   使用远程 Selenium: {remote_url}")
             self.driver = webdriver.Remote(command_executor=remote_url, options=options)
+            self._enable_network_monitoring()
             logger.info("✅ Chrome浏览器已成功启动(远程)")
             return self.driver
         except Exception as e:
@@ -108,7 +114,7 @@ class BrowserManager:
         options.add_argument('--disable-extensions')
         options.add_argument('--no-zygote')
         options.add_argument('--disable-features=VizDisplayCompositor,UseOzonePlatform')
-        options.add_argument('--remote-debugging-port=9222')
+        options.add_argument('--remote-debugging-port=0')
 
         if self.disable_notifications:
             options.add_argument('--disable-notifications')
@@ -133,6 +139,16 @@ class BrowserManager:
         except Exception as e:
             logger.error(f"   使用系统 chromedriver 启动失败: {e}")
             raise
+
+    def _enable_network_monitoring(self):
+        if not self.performance_logging or not self.driver:
+            return
+
+        try:
+            self.driver.execute_cdp_cmd("Network.enable", {})
+            logger.info("   Chrome performance log 已启用，用于监听 WebSocket 消息")
+        except Exception as e:
+            logger.warning(f"   启用 Chrome Network 监控失败，将尝试继续读取 performance log: {e}")
 
     def cleanup(self):
         """清理浏览器资源"""

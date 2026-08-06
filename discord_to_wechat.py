@@ -18,6 +18,7 @@ from src.utils.logger import get_logger, setup_logger
 
 # 导入业务模块
 from src.services.listener.discord_listener import DiscordListener
+from src.services.listener.discord_websocket_listener import DiscordWebsocketListener
 from src.services.sender.base import MessageSender
 from src.services.sender.wechat import WechatSender
 from src.services.sender.working_wechat import WorkingWechatSender
@@ -30,6 +31,7 @@ from src.services.sender.async_sender import AsyncMessageSender
 logger = setup_logger()
 
 SUPPORTED_SENDER_TYPES = ["wechat", "enterprise_wechat", "feishu", "webhook_server"]
+SUPPORTED_LISTENER_MODES = ["browser_tabs", "websocket"]
 
 
 class DiscordToWechatBridge:
@@ -44,7 +46,23 @@ class DiscordToWechatBridge:
         self.sender = self._create_sender()
         
         # 初始化Discord监听器
-        self.listener = DiscordListener(
+        self.listener = self._create_listener()
+
+    def _create_listener(self):
+        if self.config.discord_listener_mode == "websocket":
+            logger.info("Using Discord WebSocket listener mode (single page, event driven)")
+            return DiscordWebsocketListener(
+                channel_urls=self.config.discord_channel_urls,
+                on_new_message=self._on_new_message,
+                check_interval=self.config.websocket_poll_interval,
+                headless_mode=self.config.headless_mode,
+                chrome_load_images=self.config.chrome_load_images,
+                chrome_disable_notifications=self.config.chrome_disable_notifications,
+                chrome_mute_audio=self.config.chrome_mute_audio
+            )
+
+        logger.info("Using Discord browser-tabs polling listener mode")
+        return DiscordListener(
             channel_urls=self.config.discord_channel_urls,
             on_new_message=self._on_new_message,
             check_interval=self.config.check_interval,
@@ -233,6 +251,15 @@ def validate_config():
     
     if app_config.sender_type not in SUPPORTED_SENDER_TYPES:
         logger.error(f"❌ SENDER_TYPE 配置错误: {app_config.sender_type}")
+        return False
+
+    if app_config.discord_listener_mode not in SUPPORTED_LISTENER_MODES:
+        logger.error(f"❌ DISCORD_LISTENER_MODE 配置错误: {app_config.discord_listener_mode}")
+        logger.error(f"   支持的监听模式: {', '.join(SUPPORTED_LISTENER_MODES)}")
+        return False
+
+    if app_config.websocket_poll_interval <= 0:
+        logger.error("❌ WEBSOCKET_POLL_INTERVAL 必须大于 0")
         return False
 
     if app_config.async_send_enabled:
