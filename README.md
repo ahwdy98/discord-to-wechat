@@ -176,16 +176,27 @@ Driver info: driver.version: unknown
 
 **解决方法**：
 
-运行初始化脚本以修复权限并清理锁文件：
+先停止业务容器，再运行初始化脚本以修复权限并清理锁文件：
 
 ```bash
+docker compose stop discord-to-wechat
 bash bash/init_selenium.sh
 ```
 
-然后重启容器：
+然后重启 Selenium 和业务容器：
 
 ```bash
-docker compose restart
+docker compose restart selenium
+docker compose up -d --build discord-to-wechat
+```
+
+如果仍然报同样错误，通常是 Chrome 用户数据目录损坏。可以备份后重建 `selenium_data`，然后重新在 noVNC 里登录 Discord：
+
+```bash
+docker compose down
+mv selenium_data selenium_data.bak.$(date +%Y%m%d%H%M%S)
+bash bash/init_selenium.sh
+docker compose up -d --build
 ```
 
 ## 说明
