@@ -110,7 +110,7 @@ WEBHOOK_SERVER_TOKEN = ""  # 如果 webhook_server 设置了 WEBHOOK_TOKEN，这
 
 # 运行配置
 # 监控间隔（秒）
-CHECK_INTERVAL = 30
+CHECK_INTERVAL = 1
 
 # 发送配置
 # 开启后，监听线程只负责入队，后台 worker 负责实际发送，避免机器人/Webhook 请求阻塞频道轮询。

@@ -6,15 +6,12 @@ Discord消息监听器
 """
 
 import time
-from typing import List, Callable, Optional
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
 
 from src.core.models import DiscordMessage
 from src.utils.logger import get_logger
 from src.services.listener.browser import BrowserManager
-from src.services.listener.discord_parser import DiscordParser
 
 logger = get_logger(__name__)
 
@@ -57,6 +54,7 @@ class DiscordListener:
         
         # 为每个频道维护独立的最后消息ID
         self.last_message_ids = {url: None for url in self.channel_urls}
+        self.seen_message_keys = set()
         # 为每个频道维护独立的浏览器标签页句柄（window handle）
         self.channel_handles = {}
     
@@ -169,6 +167,7 @@ class DiscordListener:
                 self.driver.get(channel_url)
                 self.channel_handles[channel_url] = self.driver.current_window_handle
                 time.sleep(1)
+                self._install_dom_observer(channel_url)
                 return True
 
             # 否则新建标签页
@@ -192,6 +191,8 @@ class DiscordListener:
             self.driver.switch_to.new_window('tab')
             self.driver.get(channel_url)
             self.channel_handles[channel_url] = self.driver.current_window_handle
+            time.sleep(1)
+            self._install_dom_observer(channel_url)
             
             return True
         except Exception as e:
@@ -208,7 +209,277 @@ class DiscordListener:
         except:
             return "未知频道"
     
+    def _dom_observer_script(self) -> str:
+        return r"""
+(function () {
+  if (window.__discordDomBridgeInstalled) return true;
+  window.__discordDomBridgeInstalled = true;
+  window.__discordDomBridgeQueue = [];
+  window.__discordDomBridgeSeen = window.__discordDomBridgeSeen || {};
+  window.__discordDomBridgeBaselineUntil = Date.now() + 6000;
+  window.__discordDomBridgeStats = { queued: 0, ignored: 0, errors: 0, startedAt: Date.now() };
+
+  function messageRoot(node) {
+    let el = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+    while (el && el !== document.body) {
+      if (el.matches && el.matches('li[id^="chat-messages-"]')) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function textAll(root, selectors) {
+    const parts = [];
+    for (const selector of selectors) {
+      for (const el of root.querySelectorAll(selector)) {
+        const text = (el.innerText || el.textContent || "").trim();
+        if (text) parts.push(text);
+      }
+    }
+    return parts;
+  }
+
+  function firstText(root, selectors) {
+    for (const selector of selectors) {
+      const el = root.querySelector(selector);
+      const text = el && (el.innerText || el.textContent || "").trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function parseMessage(root) {
+    const id = root.getAttribute("id") || "";
+    if (!id) return null;
+
+    const username = firstText(root, [
+      'h3[class*="header"] span[class*="username"]',
+      'span[class*="username"]'
+    ]) || ((root.getAttribute("aria-label") || "").split(",")[0].trim()) || "Unknown user";
+
+    const contentParts = textAll(root, [
+      'div[id^="message-content-"]',
+      'div[class*="messageContent"]',
+      'div[class*="embedTitle"]',
+      'div[class*="embedDescription"]',
+      'div[class*="embedFieldValue"]'
+    ]);
+
+    const attachments = [];
+    for (const a of root.querySelectorAll('a[href]')) {
+      const href = (a.getAttribute("href") || "").trim();
+      const lower = href.toLowerCase();
+      if (!href) continue;
+      if ((lower.includes("cdn.discordapp.com") || lower.includes("media.discordapp.net")) &&
+          (lower.includes("/attachments/") || /\.(png|jpe?g|gif|webp|mp4|mov|webm)(\?|$)/.test(lower))) {
+        attachments.push(href);
+      }
+    }
+    for (const img of root.querySelectorAll('img[src]')) {
+      const src = (img.getAttribute("src") || "").trim();
+      const lower = src.toLowerCase();
+      if (src && (lower.includes("cdn.discordapp.com") || lower.includes("media.discordapp.net")) &&
+          lower.includes("/attachments/")) {
+        attachments.push(src);
+      }
+    }
+
+    const uniqueContent = Array.from(new Set(contentParts)).join("\n\n").trim();
+    const uniqueAttachments = Array.from(new Set(attachments));
+    const timeEl = root.querySelector("time");
+    return {
+      id: id,
+      username: username,
+      content: uniqueContent || (uniqueAttachments.length ? `[Attachment count: ${uniqueAttachments.length}]` : "[No text content]"),
+      timestamp: (timeEl && timeEl.getAttribute("datetime")) || new Date().toISOString(),
+      attachments: uniqueAttachments
+    };
+  }
+
+  function signature(message) {
+    return JSON.stringify({ content: message.content, attachments: message.attachments });
+  }
+
+  function remember(root) {
+    const message = parseMessage(root);
+    if (message) window.__discordDomBridgeSeen[message.id] = signature(message);
+  }
+
+  function enqueue(root) {
+    try {
+      const message = parseMessage(root);
+      if (!message) return;
+      const sig = signature(message);
+      if (Date.now() < window.__discordDomBridgeBaselineUntil) {
+        window.__discordDomBridgeSeen[message.id] = sig;
+        window.__discordDomBridgeStats.ignored += 1;
+        return;
+      }
+      if (window.__discordDomBridgeSeen[message.id] === sig) {
+        window.__discordDomBridgeStats.ignored += 1;
+        return;
+      }
+      window.__discordDomBridgeSeen[message.id] = sig;
+      window.__discordDomBridgeQueue.push(message);
+      if (window.__discordDomBridgeQueue.length > 500) {
+        window.__discordDomBridgeQueue.splice(0, window.__discordDomBridgeQueue.length - 500);
+      }
+      window.__discordDomBridgeStats.queued += 1;
+    } catch (e) {
+      window.__discordDomBridgeStats.errors += 1;
+    }
+  }
+
+  Array.from(document.querySelectorAll('li[id^="chat-messages-"]')).forEach(remember);
+
+  const pending = new Set();
+  let timer = null;
+  function schedule(root) {
+    if (!root) return;
+    pending.add(root);
+    if (timer) return;
+    timer = setTimeout(function () {
+      const roots = Array.from(pending);
+      pending.clear();
+      timer = null;
+      roots.forEach(enqueue);
+    }, 120);
+  }
+
+  const observer = new MutationObserver(function (mutations) {
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        for (const node of mutation.addedNodes) {
+          const root = messageRoot(node);
+          if (root) schedule(root);
+          if (node.querySelectorAll) {
+            for (const item of node.querySelectorAll('li[id^="chat-messages-"]')) {
+              schedule(item);
+            }
+          }
+        }
+      } else if (mutation.type === "characterData") {
+        schedule(messageRoot(mutation.target));
+      }
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  window.__discordDomBridgeObserver = observer;
+  return true;
+})();
+"""
+
+    def _install_dom_observer(self, channel_url: str) -> bool:
+        try:
+            installed = self.driver.execute_script(self._dom_observer_script())
+            if installed:
+                logger.info(f"Discord DOM event observer installed: {channel_url}")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to install Discord DOM event observer: {e}")
+        return False
+
+    def _drain_dom_events(self, channel_url: str) -> List[DiscordMessage]:
+        try:
+            raw_messages = self.driver.execute_script(
+                """
+                if (!window.__discordDomBridgeInstalled) return null;
+                const queue = window.__discordDomBridgeQueue || [];
+                window.__discordDomBridgeQueue = [];
+                return queue;
+                """
+            )
+        except Exception as e:
+            logger.warning(f"Failed to drain Discord DOM event queue: {e}")
+            return []
+
+        if raw_messages is None:
+            self._install_dom_observer(channel_url)
+            return []
+
+        channel_name = self.get_channel_name(channel_url)
+        messages = []
+        for raw in raw_messages or []:
+            msg = self._message_from_dom_event(raw, channel_url, channel_name)
+            if msg:
+                messages.append(msg)
+        return messages
+
+    def _message_from_dom_event(self, raw: Dict, channel_url: str, channel_name: str) -> Optional[DiscordMessage]:
+        message_id = str(raw.get("id") or "")
+        if not message_id:
+            return None
+
+        attachments = [str(url) for url in raw.get("attachments") or [] if url]
+        content = str(raw.get("content") or "").strip()
+        seen_key = f"{message_id}:{hash((content, tuple(attachments)))}"
+        if seen_key in self.seen_message_keys:
+            return None
+        self.seen_message_keys.add(seen_key)
+
+        timestamp = datetime.now()
+        timestamp_raw = raw.get("timestamp")
+        if timestamp_raw:
+            try:
+                timestamp = datetime.fromisoformat(str(timestamp_raw).replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        return DiscordMessage(
+            id=message_id,
+            username=str(raw.get("username") or "Unknown user"),
+            content=content or (f"[Attachment count: {len(attachments)}]" if attachments else "[No text content]"),
+            timestamp=timestamp,
+            channel_url=channel_url,
+            attachments=attachments,
+            channel_name=channel_name,
+        )
+
+    def _monitor_messages_dom_queue(self):
+        channel_errors = {url: 0 for url in self.channel_urls}
+        max_errors = 5
+
+        while True:
+            for channel_idx, channel_url in enumerate(self.channel_urls):
+                try:
+                    if not self.switch_to_channel(channel_url):
+                        raise Exception("Unable to switch to channel tab")
+
+                    new_messages = self._drain_dom_events(channel_url)
+                    if new_messages:
+                        logger.info(f"DOM event queue channel [{channel_idx + 1}/{len(self.channel_urls)}] found {len(new_messages)} messages")
+                        for idx, msg_obj in enumerate(new_messages, 1):
+                            logger.info(f"\nDOM event message [{idx}/{len(new_messages)}]:")
+                            logger.info(f"   User: {msg_obj.username}")
+                            logger.info(f"   Content: {msg_obj.content[:50]}...")
+                            self.on_new_message(msg_obj)
+                            self.last_message_ids[channel_url] = msg_obj.id
+
+                    channel_errors[channel_url] = 0
+                except Exception as e:
+                    channel_errors[channel_url] += 1
+                    logger.error(
+                        f"DOM event monitor channel [{channel_idx + 1}] error "
+                        f"({channel_errors[channel_url]}/{max_errors}): {e}"
+                    )
+                    if channel_errors[channel_url] >= max_errors:
+                        try:
+                            self.driver.refresh()
+                            time.sleep(5)
+                            self._install_dom_observer(channel_url)
+                            channel_errors[channel_url] = 0
+                        except Exception:
+                            if channel_url in self.channel_handles:
+                                del self.channel_handles[channel_url]
+                            channel_errors[channel_url] = 0
+
+            time.sleep(max(0.1, float(self.check_interval or 0.5)))
+
     def monitor_messages(self):
+        logger.info("Using Discord DOM event observer queues for browser-tabs mode")
+        self._monitor_messages_dom_queue()
+        return
         """监控Discord消息"""
         logger.info("✅ 所有准备工作已完成，开始监控消息...")
         logger.info(f"💡 正在监控 {len(self.channel_urls)} 个频道")
