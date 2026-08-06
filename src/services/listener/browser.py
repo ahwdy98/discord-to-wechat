@@ -8,6 +8,7 @@ from typing import Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from src.services.listener.cdp import execute_cdp_command
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ class BrowserManager:
             return
 
         try:
-            self.driver.execute_cdp_cmd("Network.enable", {})
+            execute_cdp_command(self.driver, "Network.enable", {})
             logger.info("   Chrome performance log 已启用，用于监听 WebSocket 消息")
         except Exception as e:
             logger.warning(f"   启用 Chrome Network 监控失败，将尝试继续读取 performance log: {e}")

@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from src.core.models import DiscordMessage
 from src.services.listener.browser import BrowserManager
+from src.services.listener.cdp import execute_cdp_command
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -292,7 +293,7 @@ class DiscordWebsocketListener:
 })();
 """
         try:
-            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
+            execute_cdp_command(self.driver, "Page.addScriptToEvaluateOnNewDocument", {"source": script})
             logger.info("Discord page WebSocket hook installed")
         except Exception as e:
             logger.warning(f"Failed to install Discord page WebSocket hook: {e}")
