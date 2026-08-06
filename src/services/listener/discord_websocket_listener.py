@@ -48,6 +48,7 @@ class DiscordWebsocketListener:
         self.message_create_seen = 0
         self.message_create_matched = 0
         self.message_create_unmatched = 0
+        self.unmatched_channel_ids = set()
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -92,6 +93,7 @@ class DiscordWebsocketListener:
     def monitor_messages(self):
         logger.info("Discord WebSocket listener started")
         logger.info(f"Filtering {len(self.channel_by_id)} Discord channels")
+        logger.info(f"Configured Discord channel IDs: {', '.join(sorted(self.channel_by_id.keys()))}")
 
         while True:
             try:
@@ -470,7 +472,14 @@ class DiscordWebsocketListener:
         channel_url = self.channel_by_id.get(channel_id)
         if not channel_url:
             self.message_create_unmatched += 1
-            logger.info(f"WebSocket MESSAGE_CREATE ignored for unconfigured channel_id={channel_id}")
+            self.unmatched_channel_ids.add(channel_id)
+            guild_id = str(data.get("guild_id") or "")
+            channel_hint = (
+                f"https://discord.com/channels/{guild_id}/{channel_id}"
+                if guild_id and channel_id
+                else channel_id
+            )
+            logger.info(f"WebSocket MESSAGE_CREATE ignored for unconfigured channel: {channel_hint}")
             return None
         self.message_create_matched += 1
 
@@ -601,5 +610,6 @@ class DiscordWebsocketListener:
             f"message_create_seen={self.message_create_seen}, "
             f"matched={self.message_create_matched}, "
             f"unmatched={self.message_create_unmatched}, "
+            f"unmatched_channel_ids={sorted(self.unmatched_channel_ids)}, "
             f"hook={self._get_hook_stats()}"
         )
