@@ -53,6 +53,7 @@ class DiscordWebsocketListener:
 
     def init_chrome(self):
         self.driver = self.browser_manager.init_chrome()
+        self._install_websocket_hook()
 
     def login_discord(self):
         logger.info("Opening Discord...")
@@ -113,6 +114,7 @@ class DiscordWebsocketListener:
 
     def _read_gateway_events(self) -> Iterable[Dict]:
         events = []
+        events.extend(self._read_hooked_gateway_events())
         for entry in self._get_performance_logs():
             message = self._parse_performance_entry(entry)
             if not message:
@@ -128,6 +130,190 @@ class DiscordWebsocketListener:
                 .get("payloadData", "")
             )
             payload = self._decode_payload(payload_data)
+            if not payload:
+                continue
+
+            self.last_frame_seen_at = time.time()
+            for gateway_event in self._extract_gateway_events(payload):
+                if gateway_event.get("t") == "MESSAGE_CREATE":
+                    events.append(gateway_event)
+
+        return events
+
+    def _install_websocket_hook(self):
+        script = r"""
+(function () {
+  if (window.__discordBridgeWsHookInstalled) return;
+  window.__discordBridgeWsHookInstalled = true;
+  window.__discordBridgeWsMessages = window.__discordBridgeWsMessages || [];
+  window.__discordBridgeWsStats = window.__discordBridgeWsStats || {
+    seen: 0,
+    text: 0,
+    binary: 0,
+    decoded: 0,
+    errors: 0
+  };
+
+  const OriginalWebSocket = window.WebSocket;
+  const decoder = new TextDecoder("utf-8");
+
+  function pushPayload(text, source) {
+    if (!text || typeof text !== "string") return;
+    const trimmed = text.trim();
+    if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) return;
+    window.__discordBridgeWsMessages.push({
+      source: source,
+      payload: trimmed,
+      ts: Date.now()
+    });
+    if (window.__discordBridgeWsMessages.length > 1000) {
+      window.__discordBridgeWsMessages.splice(0, window.__discordBridgeWsMessages.length - 1000);
+    }
+    window.__discordBridgeWsStats.decoded += 1;
+  }
+
+  async function tryDeflate(buffer) {
+    if (!("DecompressionStream" in window)) return null;
+    for (const format of ["deflate", "deflate-raw", "gzip"]) {
+      try {
+        const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream(format));
+        return await new Response(stream).text();
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function createStreamInflater(source) {
+    if (!("DecompressionStream" in window)) return null;
+    try {
+      const stream = new DecompressionStream("deflate");
+      const writer = stream.writable.getWriter();
+      const reader = stream.readable.getReader();
+      let textBuffer = "";
+
+      function drainBuffer() {
+        const trimmed = textBuffer.trim();
+        if (!trimmed) {
+          textBuffer = "";
+          return;
+        }
+
+        try {
+          JSON.parse(trimmed);
+          pushPayload(trimmed, source);
+          textBuffer = "";
+        } catch (e) {
+          if (textBuffer.length > 1024 * 1024) {
+            textBuffer = textBuffer.slice(-256 * 1024);
+          }
+        }
+      }
+
+      (async function readLoop() {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) return;
+          textBuffer += decoder.decode(result.value, { stream: true });
+          drainBuffer();
+        }
+      })().catch(function () {
+        window.__discordBridgeWsStats.errors += 1;
+      });
+
+      return async function write(buffer) {
+        await writer.write(new Uint8Array(buffer));
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function decodeData(data, streamInflater) {
+    if (typeof data === "string") {
+      window.__discordBridgeWsStats.text += 1;
+      return data;
+    }
+
+    let buffer = null;
+    if (data instanceof ArrayBuffer) {
+      buffer = data;
+    } else if (data instanceof Blob) {
+      buffer = await data.arrayBuffer();
+    }
+
+    if (!buffer) return null;
+    window.__discordBridgeWsStats.binary += 1;
+
+    try {
+      const text = decoder.decode(buffer);
+      if (text && (text.trim()[0] === "{" || text.trim()[0] === "[")) return text;
+    } catch (e) {}
+
+    const deflated = await tryDeflate(buffer);
+    if (deflated) return deflated;
+
+    if (streamInflater) {
+      await streamInflater(buffer);
+    }
+    return null;
+  }
+
+  function WrappedWebSocket(url, protocols) {
+    const ws = protocols === undefined
+      ? new OriginalWebSocket(url)
+      : new OriginalWebSocket(url, protocols);
+
+    try {
+      const urlText = String(url || "");
+      if (urlText.includes("gateway.discord.gg") || urlText.includes("discord.gg")) {
+        const streamInflater = createStreamInflater("page_hook_deflate_stream");
+        ws.addEventListener("message", function (event) {
+          window.__discordBridgeWsStats.seen += 1;
+          decodeData(event.data, streamInflater).then(function (text) {
+            pushPayload(text, "page_hook");
+          }).catch(function () {
+            window.__discordBridgeWsStats.errors += 1;
+          });
+        });
+      }
+    } catch (e) {
+      window.__discordBridgeWsStats.errors += 1;
+    }
+
+    return ws;
+  }
+
+  WrappedWebSocket.prototype = OriginalWebSocket.prototype;
+  Object.setPrototypeOf(WrappedWebSocket, OriginalWebSocket);
+  for (const key of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) {
+    Object.defineProperty(WrappedWebSocket, key, { value: OriginalWebSocket[key] });
+  }
+  window.WebSocket = WrappedWebSocket;
+})();
+"""
+        try:
+            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
+            logger.info("Discord page WebSocket hook installed")
+        except Exception as e:
+            logger.warning(f"Failed to install Discord page WebSocket hook: {e}")
+
+    def _read_hooked_gateway_events(self) -> List[Dict]:
+        try:
+            raw_messages = self.driver.execute_script(
+                """
+                const messages = window.__discordBridgeWsMessages || [];
+                window.__discordBridgeWsMessages = [];
+                return messages;
+                """
+            )
+        except Exception:
+            return []
+
+        events = []
+        for item in raw_messages or []:
+            if not isinstance(item, dict):
+                continue
+            payload = self._decode_payload(item.get("payload", ""))
             if not payload:
                 continue
 
@@ -282,8 +468,18 @@ class DiscordWebsocketListener:
         if now - self.last_parse_warning_at < 60:
             return
 
+        stats = self._get_hook_stats()
         logger.warning(
-            "No parseable Discord WebSocket JSON frames have been read from Chrome performance log yet. "
-            "If this continues, temporarily switch back to DISCORD_LISTENER_MODE = 'browser_tabs'."
+            "No parseable Discord WebSocket JSON frames have been read yet. "
+            f"Page hook stats: {stats}. "
+            "If this continues after Discord is fully loaded and new messages arrive, "
+            "temporarily switch back to DISCORD_LISTENER_MODE = 'browser_tabs'."
         )
         self.last_parse_warning_at = now
+
+    def _get_hook_stats(self) -> Dict:
+        try:
+            stats = self.driver.execute_script("return window.__discordBridgeWsStats || null;")
+            return stats if isinstance(stats, dict) else {}
+        except Exception:
+            return {}
