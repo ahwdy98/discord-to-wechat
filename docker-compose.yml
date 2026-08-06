@@ -68,9 +68,6 @@ services:
       # - NO_PROXY=selenium,localhost,127.0.0.1
       # 可选：显式设置 Chrome 代理（推荐用这个，确保 Selenium 里打开外网也走代理）
       # - CHROME_PROXY=http://127.0.0.1:7890
-      # Optional: low-resource realtime mode. Opens one Discord page and listens to WebSocket frames.
-      # - DISCORD_LISTENER_MODE=websocket
-      # - WEBSOCKET_POLL_INTERVAL=0.2
     volumes:
       - ./config.py:/app/config.py:ro
     depends_on:

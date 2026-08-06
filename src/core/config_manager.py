@@ -9,12 +9,6 @@ def _as_float(value, default: float) -> float:
     except (TypeError, ValueError):
         return default
 
-def _env_or_config(name: str, config_value):
-    value = os.getenv(name)
-    if value is None or value == "":
-        return config_value
-    return value
-
 class Config:
     """配置管理类"""
     
@@ -74,19 +68,8 @@ class Config:
                 self.async_send_enabled = getattr(config_module, 'ASYNC_SEND_ENABLED', False)
                 self.send_workers = getattr(config_module, 'SEND_WORKERS', 1)
                 self.send_queue_size = getattr(config_module, 'SEND_QUEUE_SIZE', 1000)
-                self.discord_listener_mode = str(
-                    _env_or_config(
-                        'DISCORD_LISTENER_MODE',
-                        getattr(config_module, 'DISCORD_LISTENER_MODE', 'browser_tabs')
-                    )
-                ).strip().lower()
-                self.websocket_poll_interval = _as_float(
-                    _env_or_config(
-                        'WEBSOCKET_POLL_INTERVAL',
-                        getattr(config_module, 'WEBSOCKET_POLL_INTERVAL', 0.2)
-                    ),
-                    0.2
-                )
+                self.discord_listener_mode = str(getattr(config_module, 'DISCORD_LISTENER_MODE', 'browser_tabs')).strip().lower()
+                self.websocket_poll_interval = _as_float(getattr(config_module, 'WEBSOCKET_POLL_INTERVAL', 0.2), 0.2)
                 self.check_interval = getattr(config_module, 'CHECK_INTERVAL', 3)
                 self.headless_mode = getattr(config_module, 'HEADLESS_MODE', False)
                 self.chrome_load_images = getattr(config_module, 'CHROME_LOAD_IMAGES', True)

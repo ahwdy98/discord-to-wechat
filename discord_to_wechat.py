@@ -355,9 +355,6 @@ def print_startup_info():
     logger.info(f"   异步发送: {'是' if app_config.async_send_enabled else '否'}")
     if app_config.async_send_enabled:
         logger.info(f"   发送Worker: {app_config.send_workers}, 队列大小: {app_config.send_queue_size}")
-    logger.info(f"   Listener mode: {app_config.discord_listener_mode}")
-    if app_config.discord_listener_mode == "websocket":
-        logger.info(f"   WebSocket poll interval: {app_config.websocket_poll_interval} seconds")
     logger.info("=" * 60 + "\n")
 
 
