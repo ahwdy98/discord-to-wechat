@@ -10,7 +10,7 @@ for Gateway MESSAGE_CREATE frames. It avoids opening one tab per channel.
 import json
 import time
 from datetime import datetime
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from src.core.models import DiscordMessage
 from src.services.listener.browser import BrowserManager
@@ -37,6 +37,7 @@ class DiscordWebsocketListener:
         self.on_new_message = on_new_message
         self.check_interval = max(0.05, float(check_interval or 0.2))
         self.channel_by_id = self._build_channel_map(self.channel_urls)
+        self.guild_channels = self._build_guild_channel_map(self.channel_urls)
         self.seen_message_ids = set()
         self.seen_message_order: List[str] = []
         self.max_seen_messages = 5000
@@ -49,6 +50,7 @@ class DiscordWebsocketListener:
         self.message_create_matched = 0
         self.message_create_unmatched = 0
         self.unmatched_channel_ids = set()
+        self.last_subscription_at = 0.0
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -87,6 +89,7 @@ class DiscordWebsocketListener:
         self.driver.get(target_url)
         time.sleep(5)
         self._ensure_websocket_hook_active(target_url)
+        self._subscribe_configured_channels(force=True)
         self._drain_performance_logs()
         logger.info("WebSocket listener page is ready")
 
@@ -94,6 +97,14 @@ class DiscordWebsocketListener:
         logger.info("Discord WebSocket listener started")
         logger.info(f"Filtering {len(self.channel_by_id)} Discord channels")
         logger.info(f"Configured Discord channel IDs: {', '.join(sorted(self.channel_by_id.keys()))}")
+        if self.guild_channels:
+            logger.info(
+                "Configured Discord guild subscriptions: "
+                + ", ".join(
+                    f"{guild_id}({len(channel_ids)} channels)"
+                    for guild_id, channel_ids in sorted(self.guild_channels.items())
+                )
+            )
 
         while True:
             try:
@@ -113,6 +124,7 @@ class DiscordWebsocketListener:
 
                 self._warn_if_no_frames()
                 self._log_periodic_stats()
+                self._subscribe_configured_channels()
             except Exception as e:
                 logger.error(f"WebSocket listener error: {e}", exc_info=True)
                 time.sleep(3)
@@ -165,11 +177,60 @@ class DiscordWebsocketListener:
     decoded: 0,
     errors: 0,
     eventTypes: {},
-    channels: {}
+    channels: {},
+    subscriptionsSent: 0,
+    subscriptionErrors: 0,
+    gatewaySockets: 0
   };
+  window.__discordBridgeGatewaySockets = window.__discordBridgeGatewaySockets || [];
+  window.__discordBridgePendingSubscriptions = window.__discordBridgePendingSubscriptions || [];
 
   const OriginalWebSocket = window.WebSocket;
   const decoder = new TextDecoder("utf-8");
+
+  function sendSubscriptions(ws, subscriptions) {
+    if (!ws || ws.readyState !== OriginalWebSocket.OPEN) return false;
+    let sent = false;
+    for (const sub of subscriptions || []) {
+      try {
+        const channels = {};
+        for (const channelId of sub.channel_ids || []) {
+          channels[String(channelId)] = [[0, 99]];
+        }
+        if (!Object.keys(channels).length) continue;
+        ws.send(JSON.stringify({
+          op: 14,
+          d: {
+            guild_id: String(sub.guild_id),
+            typing: true,
+            activities: true,
+            threads: true,
+            channels: channels
+          }
+        }));
+        window.__discordBridgeWsStats.subscriptionsSent += 1;
+        sent = true;
+      } catch (e) {
+        window.__discordBridgeWsStats.subscriptionErrors += 1;
+      }
+    }
+    return sent;
+  }
+
+  function sendPendingSubscriptions() {
+    let sent = false;
+    for (const ws of window.__discordBridgeGatewaySockets) {
+      if (sendSubscriptions(ws, window.__discordBridgePendingSubscriptions)) {
+        sent = true;
+      }
+    }
+    return sent;
+  }
+
+  window.__discordBridgeSubscribeChannels = function (subscriptions) {
+    window.__discordBridgePendingSubscriptions = subscriptions || [];
+    return sendPendingSubscriptions();
+  };
 
   function pushPayload(text, source) {
     if (!text || typeof text !== "string") return;
@@ -339,6 +400,17 @@ class DiscordWebsocketListener:
       const urlText = String(url || "");
       if (urlText.includes("gateway.discord.gg") || urlText.includes("discord.gg")) {
         const streamInflater = createStreamInflater("page_hook_deflate_stream");
+        window.__discordBridgeGatewaySockets.push(ws);
+        window.__discordBridgeWsStats.gatewaySockets = window.__discordBridgeGatewaySockets.length;
+        ws.addEventListener("open", function () {
+          sendPendingSubscriptions();
+        });
+        ws.addEventListener("close", function () {
+          window.__discordBridgeGatewaySockets = window.__discordBridgeGatewaySockets.filter(function (item) {
+            return item !== ws;
+          });
+          window.__discordBridgeWsStats.gatewaySockets = window.__discordBridgeGatewaySockets.length;
+        });
         ws.addEventListener("message", function (event) {
           window.__discordBridgeWsStats.seen += 1;
           decodeData(event.data, streamInflater).then(function (text) {
@@ -541,12 +613,82 @@ class DiscordWebsocketListener:
         return channel_by_id
 
     @staticmethod
+    def _build_guild_channel_map(channel_urls: List[str]) -> Dict[str, List[str]]:
+        guild_channels: Dict[str, List[str]] = {}
+        for url in channel_urls:
+            ids = DiscordWebsocketListener._extract_guild_channel_ids(url)
+            if not ids:
+                continue
+            guild_id, channel_id = ids
+            channel_ids = guild_channels.setdefault(guild_id, [])
+            if channel_id not in channel_ids:
+                channel_ids.append(channel_id)
+        return guild_channels
+
+    @staticmethod
+    def _extract_guild_channel_ids(channel_url: str) -> Optional[Tuple[str, str]]:
+        parts = str(channel_url or "").rstrip("/").split("/")
+        if len(parts) < 2:
+            return None
+
+        guild_id = parts[-2]
+        channel_id = parts[-1]
+        if guild_id.isdigit() and channel_id.isdigit():
+            return guild_id, channel_id
+        return None
+
+    @staticmethod
     def _extract_channel_id(channel_url: str) -> Optional[str]:
         parts = str(channel_url or "").rstrip("/").split("/")
         if len(parts) < 2:
             return None
         channel_id = parts[-1]
         return channel_id if channel_id.isdigit() else None
+
+    def _subscription_payload(self) -> List[Dict[str, List[str]]]:
+        return [
+            {"guild_id": guild_id, "channel_ids": sorted(channel_ids)}
+            for guild_id, channel_ids in sorted(self.guild_channels.items())
+        ]
+
+    def _subscribe_configured_channels(self, force: bool = False):
+        if not self.guild_channels or not self.driver:
+            return
+
+        now = time.time()
+        if not force and now - self.last_subscription_at < 60:
+            return
+
+        payload = self._subscription_payload()
+        try:
+            sent = self.driver.execute_script(
+                """
+                if (window.__discordBridgeSubscribeChannels) {
+                  return window.__discordBridgeSubscribeChannels(arguments[0]);
+                }
+                return null;
+                """,
+                payload,
+            )
+            self.last_subscription_at = now
+        except Exception as e:
+            logger.warning(f"Failed to subscribe configured Discord channels: {e}")
+            return
+
+        if sent is None:
+            logger.warning(
+                "Discord WebSocket subscription hook is unavailable on the page; "
+                "configured channel events may be incomplete."
+            )
+            return
+
+        stats = self._get_hook_stats()
+        logger.info(
+            "Discord WebSocket subscriptions "
+            f"{'sent' if sent else 'queued'} for "
+            f"{sum(len(item['channel_ids']) for item in payload)} channels across "
+            f"{len(payload)} guilds; hook={stats}"
+        )
 
     @staticmethod
     def _get_channel_name(channel_url: str) -> str:
