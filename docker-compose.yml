@@ -15,7 +15,7 @@ services:
       - ./selenium_data:/home/seluser/discord-chrome-data  # 使用命名卷持久化 WebDriver 的用户数据目录
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/opt/bin/check-grid.sh", "--host", "0.0.0.0", "--port", "4444"]
+      test: ["CMD", "python3", "-c", "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:4444/status', timeout=3)); nodes=data.get('value',{}).get('nodes',[]); assert any(n.get('availability') == 'UP' for n in nodes)"]
       interval: 5s
       timeout: 10s
       retries: 10
