@@ -379,6 +379,13 @@ class DiscordListener:
     if (message) window.__discordDomBridgeSeen[message.id] = signature(message);
   }
 
+  window.__discordDomBridgeCollectVisibleMessages = function (limit) {
+    const roots = Array.from(document.querySelectorAll('li[id^="chat-messages-"]'));
+    return roots.slice(-Math.max(1, limit || 50))
+      .map(function (root) { return parseMessage(root, "recovery"); })
+      .filter(Boolean);
+  };
+
   function enqueue(root, eventKind) {
     try {
       const message = parseMessage(root, eventKind);
@@ -534,7 +541,14 @@ class DiscordListener:
 
                 const queue = window.__discordDomBridgeQueue || [];
                 window.__discordDomBridgeQueue = [];
-                return { messages: queue, channelName: channelName(), scrolled: keepAtLatest() };
+                const visibleMessages = window.__discordDomBridgeCollectVisibleMessages
+                  ? window.__discordDomBridgeCollectVisibleMessages(50)
+                  : [];
+                return {
+                  messages: queue.concat(visibleMessages),
+                  channelName: channelName(),
+                  scrolled: keepAtLatest()
+                };
                 """
             )
         except Exception as e:
