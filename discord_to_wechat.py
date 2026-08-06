@@ -177,13 +177,13 @@ class DiscordToWechatBridge:
             logger.error(f"   支持的类型: {', '.join(SUPPORTED_SENDER_TYPES)}")
             raise ValueError(f"不支持的发送器类型: {sender_type}")
     
-    def _on_new_message(self, message: DiscordMessage):
+    def _on_new_message(self, message: DiscordMessage) -> bool:
         """
         新消息回调函数
         :param message: Discord消息对象
         """
         # 发送消息
-        self.sender.send_message(message)
+        return self.sender.send_message(message)
     
     def run(self):
         """运行主程序"""

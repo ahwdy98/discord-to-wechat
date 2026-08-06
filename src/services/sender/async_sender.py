@@ -9,6 +9,7 @@
 
 import queue
 import threading
+import time
 from typing import Optional
 
 from .base import MessageSender
@@ -89,7 +90,21 @@ class AsyncMessageSender(MessageSender):
                 if message is None:
                     return
 
-                self.sender.send_message(message)
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        if self.sender.send_message(message):
+                            break
+                    except Exception as e:
+                        logger.error(f"寮傛鍙戦€佹秷鎭紓甯? {e}", exc_info=True)
+
+                    if attempt < max_attempts:
+                        time.sleep(min(5, attempt))
+                    else:
+                        logger.error(
+                            "寮傛鍙戦€佹秷鎭け璐ワ紝宸茶揪鏈€澶ч噸璇曟鏁? "
+                            f"message_id={getattr(message, 'id', '')}"
+                        )
             except Exception as e:
                 logger.error(f"异步发送消息异常: {e}", exc_info=True)
             finally:

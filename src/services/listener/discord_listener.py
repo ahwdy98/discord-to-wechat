@@ -7,6 +7,7 @@ Discord消息监听器
 
 import time
 import os
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
@@ -741,6 +742,7 @@ class DiscordListener:
                   return false;
                 }
 
+                const scrolledBeforeCollect = keepAtLatest();
                 const queue = window.__discordDomBridgeQueue || [];
                 window.__discordDomBridgeQueue = [];
                 const visibleMessages = window.__discordDomBridgeCollectVisibleMessages
@@ -749,7 +751,8 @@ class DiscordListener:
                 return {
                   messages: queue.concat(visibleMessages),
                   channelName: channelName(),
-                  scrolled: keepAtLatest()
+                  scrolled: scrolledBeforeCollect || keepAtLatest(),
+                  bridgeStats: window.__discordDomBridgeStats || null
                 };
                 """
             )
@@ -780,11 +783,37 @@ class DiscordListener:
             channel_name = self._refresh_channel_name(channel_url)
 
         messages = []
+        batch_seen_keys = set()
         for raw in raw_messages or []:
             msg = self._message_from_dom_event(raw, channel_url, channel_name)
             if msg:
+                seen_key = self._message_seen_key(msg)
+                if seen_key in batch_seen_keys:
+                    continue
+                batch_seen_keys.add(seen_key)
                 messages.append(msg)
         return messages
+
+    @staticmethod
+    def _message_seen_key(message: DiscordMessage) -> str:
+        payload = "\0".join([message.content or "", *(message.attachments or [])])
+        digest = hashlib.sha1(payload.encode("utf-8", "replace")).hexdigest()
+        return f"{message.channel_url}:{message.id}:{digest}"
+
+    def _mark_message_seen(self, message: DiscordMessage) -> None:
+        self.seen_message_keys.add(self._message_seen_key(message))
+
+    def _dispatch_dom_message(self, message: DiscordMessage) -> bool:
+        result = self.on_new_message(message)
+        if result is False:
+            logger.error(
+                "DOM event message send failed, keeping it eligible for visible-message retry: "
+                f"channel={message.channel_url}, id={message.id}"
+            )
+            return False
+
+        self._mark_message_seen(message)
+        return True
 
     def _message_from_dom_event(self, raw: Dict, channel_url: str, channel_name: str) -> Optional[DiscordMessage]:
         message_id = str(raw.get("id") or "")
@@ -794,12 +823,20 @@ class DiscordListener:
 
         attachments = [str(url) for url in raw.get("attachments") or [] if url]
         content = str(raw.get("content") or "").strip()
-        seen_key = f"{message_id}:{hash((content, tuple(attachments)))}"
-        if seen_key in self.seen_message_keys:
+        message_content = content or (f"[Attachment count: {len(attachments)}]" if attachments else "[No text content]")
+        probe_message = DiscordMessage(
+            id=message_id,
+            username=str(raw.get("username") or "Unknown user"),
+            content=message_content,
+            timestamp=datetime.now(timezone.utc),
+            channel_url=channel_url,
+            attachments=attachments,
+            channel_name=channel_name,
+        )
+        if self._message_seen_key(probe_message) in self.seen_message_keys:
             return None
-        self.seen_message_keys.add(seen_key)
 
-        timestamp = datetime.now(timezone.utc)
+        timestamp = probe_message.timestamp
         timestamp_raw = raw.get("timestamp")
         if timestamp_raw:
             try:
@@ -818,8 +855,8 @@ class DiscordListener:
 
         return DiscordMessage(
             id=message_id,
-            username=str(raw.get("username") or "Unknown user"),
-            content=content or (f"[Attachment count: {len(attachments)}]" if attachments else "[No text content]"),
+            username=probe_message.username,
+            content=message_content,
             timestamp=timestamp,
             channel_url=channel_url,
             attachments=attachments,
@@ -865,8 +902,8 @@ class DiscordListener:
                             logger.info(f"\nDOM event message [{idx}/{len(new_messages)}]:")
                             logger.info(f"   User: {msg_obj.username}")
                             logger.info(f"   Content: {msg_obj.content[:50]}...")
-                            self.on_new_message(msg_obj)
-                            self.last_message_ids[channel_url] = msg_obj.id
+                            if self._dispatch_dom_message(msg_obj):
+                                self.last_message_ids[channel_url] = msg_obj.id
 
                     channel_errors[channel_url] = 0
                 except Exception as e:
@@ -980,9 +1017,8 @@ class DiscordListener:
                                     logger.info(f"   内容: {msg_obj.content[:50]}...")
                                     
                                     # 回调
-                                    self.on_new_message(msg_obj)
-                                    
-                                    self.last_message_ids[channel_url] = msg_obj.id
+                                    if self._dispatch_dom_message(msg_obj):
+                                        self.last_message_ids[channel_url] = msg_obj.id
                                     
                                     if len(new_messages) > 1 and idx < len(new_messages):
                                         time.sleep(0.5)
