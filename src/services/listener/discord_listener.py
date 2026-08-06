@@ -147,6 +147,18 @@ class DiscordListener:
                     # logger.info(f"   URL: {channel_url}")
                     self.driver.switch_to.window(handle)
                     time.sleep(0.1)
+
+                current_url = (self.driver.current_url or "").rstrip("/")
+                expected_url = channel_url.rstrip("/")
+                if not current_url.startswith(expected_url):
+                    logger.warning(
+                        "频道标签页 URL 已偏离，重新导航: "
+                        f"expected={expected_url}, current={current_url}"
+                    )
+                    self.driver.get(channel_url)
+                    time.sleep(1)
+                    self._install_dom_observer(channel_url)
+                    self._refresh_channel_name(channel_url)
                 return True
 
             # 2. 尝试通过已开启的标签页反查URL匹配的句柄
@@ -586,6 +598,7 @@ class DiscordListener:
         message_id = str(raw.get("id") or "")
         if not message_id:
             return None
+        message_id = message_id.rsplit("-", 1)[-1]
 
         attachments = [str(url) for url in raw.get("attachments") or [] if url]
         content = str(raw.get("content") or "").strip()
