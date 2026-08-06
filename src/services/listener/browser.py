@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -83,6 +84,7 @@ class BrowserManager:
         try:
             logger.info(f"   使用远程 Selenium: {remote_url}")
             self.driver = webdriver.Remote(command_executor=remote_url, options=options)
+            self._remote_start_attempt = 1
             self._enable_network_monitoring()
             logger.info("✅ Chrome浏览器已成功启动(远程)")
             return self.driver
@@ -92,6 +94,16 @@ class BrowserManager:
             if "Chrome instance exited" in error_text or "session not created" in error_text:
                 logger.error("   提示：Chrome 可能因 selenium_data 权限、锁文件或残留会话启动失败")
                 logger.error("   可尝试执行: bash bash/init_selenium.sh && docker compose restart")
+            attempt = getattr(self, "_remote_start_attempt", 1)
+            retries = self._chrome_start_retries()
+            if attempt < retries:
+                delay = min(30, 5 * attempt)
+                logger.warning(f"   Chrome start failed, retrying in {delay}s ({attempt}/{retries})...")
+                self._remote_start_attempt = attempt + 1
+                time.sleep(delay)
+                return self._init_remote_chrome(remote_url, options)
+
+            self._remote_start_attempt = 1
             raise
 
     def _configure_local_options(self, options: Options):
@@ -149,6 +161,13 @@ class BrowserManager:
             logger.info("   Chrome performance log 已启用，用于监听 WebSocket 消息")
         except Exception as e:
             logger.warning(f"   启用 Chrome Network 监控失败，将尝试继续读取 performance log: {e}")
+
+    @staticmethod
+    def _chrome_start_retries() -> int:
+        try:
+            return max(1, int(os.getenv("CHROME_START_RETRIES", "3")))
+        except ValueError:
+            return 3
 
     def cleanup(self):
         """清理浏览器资源"""
