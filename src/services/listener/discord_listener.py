@@ -10,8 +10,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
-from selenium.common.exceptions import NoSuchSessionException
-
 from src.core.models import DiscordMessage
 from src.utils.logger import get_logger
 from src.services.listener.browser import BrowserManager
@@ -120,8 +118,6 @@ class DiscordListener:
     def _is_browser_session_lost(error) -> bool:
         if not error:
             return False
-        if isinstance(error, NoSuchSessionException):
-            return True
         text = str(error).lower()
         return any(
             phrase in text
