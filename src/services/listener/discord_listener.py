@@ -10,6 +10,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
+from selenium.common.exceptions import NoSuchSessionException
+
 from src.core.models import DiscordMessage
 from src.utils.logger import get_logger
 from src.services.listener.browser import BrowserManager
@@ -63,6 +65,7 @@ class DiscordListener:
         # 为每个频道维护独立的浏览器标签页句柄（window handle）
         self.channel_handles = {}
         self._last_tab_reconcile_at = 0.0
+        self._last_switch_error = None
     
     def init_chrome(self):
         """初始化Chrome浏览器"""
@@ -108,9 +111,35 @@ class DiscordListener:
             pass
             
         self.channel_handles = {}
+        self._last_switch_error = None
         self.init_chrome()
         self.login_discord()
         logger.info("✅ 浏览器重启完成")
+
+    @staticmethod
+    def _is_browser_session_lost(error) -> bool:
+        if not error:
+            return False
+        if isinstance(error, NoSuchSessionException):
+            return True
+        text = str(error).lower()
+        return any(
+            phrase in text
+            for phrase in (
+                "unable to find session",
+                "invalid session id",
+                "no such session",
+                "session timed out due to inactivity",
+                "session was removed",
+            )
+        )
+
+    def _recover_browser_session(self, reason: str) -> None:
+        logger.error(f"检测到 Selenium 浏览器会话已失效，正在自动重建: {reason}")
+        self.restart_browser()
+        self.navigate_to_channel()
+        self._last_tab_reconcile_at = 0.0
+        logger.info("✅ Selenium 浏览器会话已重建，继续监控")
 
     @staticmethod
     def _channel_id_from_url(url: str) -> str:
@@ -309,6 +338,7 @@ class DiscordListener:
 
     def switch_to_channel(self, channel_url: str) -> bool:
         """切换到指定频道对应的标签页"""
+        self._last_switch_error = None
         try:
             # 1. 尝试直接使用缓存的句柄
             handle = self.channel_handles.get(channel_url)
@@ -380,6 +410,7 @@ class DiscordListener:
             self.channel_handles[channel_url] = self.driver.current_window_handle
             return self._navigate_current_tab_to_channel(channel_url)
         except Exception as e:
+            self._last_switch_error = e
             logger.error(f"切换频道标签页失败: {e}")
             return False
     
@@ -731,6 +762,8 @@ class DiscordListener:
                 """
             )
         except Exception as e:
+            if self._is_browser_session_lost(e):
+                raise
             logger.warning(f"Failed to drain Discord DOM event queue: {e}")
             return []
 
@@ -818,11 +851,19 @@ class DiscordListener:
             try:
                 self._reconcile_channel_tabs()
             except Exception as e:
+                if self._is_browser_session_lost(e):
+                    self._recover_browser_session(str(e).splitlines()[0])
+                    channel_errors = {url: 0 for url in self.channel_urls}
+                    continue
                 logger.warning(f"频道标签页巡检失败: {e}")
 
             for channel_idx, channel_url in enumerate(self.channel_urls):
                 try:
                     if not self.switch_to_channel(channel_url):
+                        if self._is_browser_session_lost(self._last_switch_error):
+                            self._recover_browser_session(str(self._last_switch_error).splitlines()[0])
+                            channel_errors = {url: 0 for url in self.channel_urls}
+                            break
                         raise Exception("Unable to switch to channel tab")
 
                     new_messages = self._drain_dom_events(channel_url)
@@ -837,6 +878,10 @@ class DiscordListener:
 
                     channel_errors[channel_url] = 0
                 except Exception as e:
+                    if self._is_browser_session_lost(e):
+                        self._recover_browser_session(str(e).splitlines()[0])
+                        channel_errors = {url: 0 for url in self.channel_urls}
+                        break
                     channel_errors[channel_url] += 1
                     logger.error(
                         f"DOM event monitor channel [{channel_idx + 1}] error "
