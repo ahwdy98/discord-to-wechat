@@ -32,10 +32,14 @@ class DiscordWebsocketListener:
         chrome_load_images: bool = True,
         chrome_disable_notifications: bool = True,
         chrome_mute_audio: bool = True,
+        last_messages_interval: float = 2.0,
+        subscribe_channels: bool = False,
     ):
         self.channel_urls = channel_urls if isinstance(channel_urls, list) else [channel_urls]
         self.on_new_message = on_new_message
         self.check_interval = max(0.05, float(check_interval or 0.2))
+        self.last_messages_interval = max(0.0, float(last_messages_interval or 0.0))
+        self.subscribe_channels = bool(subscribe_channels)
         self.channel_by_id = self._build_channel_map(self.channel_urls)
         self.guild_channels = self._build_guild_channel_map(self.channel_urls)
         self.seen_message_ids = set()
@@ -51,6 +55,10 @@ class DiscordWebsocketListener:
         self.message_create_unmatched = 0
         self.unmatched_channel_ids = set()
         self.last_subscription_at = 0.0
+        self.last_messages_request_at = 0.0
+        self.last_message_ids_by_channel: Dict[str, str] = {}
+        self.last_messages_seen = 0
+        self.last_messages_matched = 0
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -90,6 +98,7 @@ class DiscordWebsocketListener:
         time.sleep(5)
         self._ensure_websocket_hook_active(target_url)
         self._subscribe_configured_channels(force=True)
+        self._request_last_messages(force=True)
         self._drain_performance_logs()
         logger.info("WebSocket listener page is ready")
 
@@ -97,6 +106,14 @@ class DiscordWebsocketListener:
         logger.info("Discord WebSocket listener started")
         logger.info(f"Filtering {len(self.channel_by_id)} Discord channels")
         logger.info(f"Configured Discord channel IDs: {', '.join(sorted(self.channel_by_id.keys()))}")
+        logger.info(
+            "WebSocket fallback last-message interval: "
+            f"{self.last_messages_interval}s"
+        )
+        logger.info(
+            "WebSocket active channel subscription: "
+            f"{'enabled' if self.subscribe_channels else 'disabled'}"
+        )
         if self.guild_channels:
             logger.info(
                 "Configured Discord guild subscriptions: "
@@ -125,6 +142,7 @@ class DiscordWebsocketListener:
                 self._warn_if_no_frames()
                 self._log_periodic_stats()
                 self._subscribe_configured_channels()
+                self._request_last_messages()
             except Exception as e:
                 logger.error(f"WebSocket listener error: {e}", exc_info=True)
                 time.sleep(3)
@@ -161,6 +179,8 @@ class DiscordWebsocketListener:
                 self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
                     events.append(gateway_event)
+                elif gateway_event.get("t") == "LAST_MESSAGES":
+                    events.extend(self._message_events_from_last_messages(gateway_event))
 
         return events
 
@@ -180,41 +200,65 @@ class DiscordWebsocketListener:
     channels: {},
     subscriptionsSent: 0,
     subscriptionErrors: 0,
-    gatewaySockets: 0
+    lastMessagesSent: 0,
+    lastMessageErrors: 0,
+    gatewaySockets: 0,
+    lastCloseCode: null,
+    lastCloseReason: ""
   };
   window.__discordBridgeGatewaySockets = window.__discordBridgeGatewaySockets || [];
   window.__discordBridgePendingSubscriptions = window.__discordBridgePendingSubscriptions || [];
+  window.__discordBridgePendingLastMessageRequests = window.__discordBridgePendingLastMessageRequests || [];
 
   const OriginalWebSocket = window.WebSocket;
   const decoder = new TextDecoder("utf-8");
 
-  function sendSubscriptions(ws, subscriptions) {
+  function sendGatewayPayload(ws, payload, errorStat) {
     if (!ws || ws.readyState !== OriginalWebSocket.OPEN) return false;
-    let sent = false;
-    for (const sub of subscriptions || []) {
-      try {
-        const channels = {};
-        for (const channelId of sub.channel_ids || []) {
-          channels[String(channelId)] = [[0, 99]];
-        }
-        if (!Object.keys(channels).length) continue;
-        ws.send(JSON.stringify({
-          op: 14,
-          d: {
-            guild_id: String(sub.guild_id),
-            typing: true,
-            activities: true,
-            threads: true,
-            channels: channels
-          }
-        }));
-        window.__discordBridgeWsStats.subscriptionsSent += 1;
-        sent = true;
-      } catch (e) {
-        window.__discordBridgeWsStats.subscriptionErrors += 1;
-      }
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      window.__discordBridgeWsStats[errorStat] =
+        (window.__discordBridgeWsStats[errorStat] || 0) + 1;
+      return false;
     }
-    return sent;
+  }
+
+  function subscriptionBulkPayload(subscriptions) {
+    const guildSubscriptions = {};
+    for (const sub of subscriptions || []) {
+      const channels = {};
+      for (const channelId of sub.channel_ids || []) {
+        channels[String(channelId)] = [[0, 99]];
+      }
+      if (!Object.keys(channels).length) continue;
+      guildSubscriptions[String(sub.guild_id)] = {
+        typing: true,
+        activities: true,
+        threads: true,
+        channels: channels,
+        members: [],
+        thread_member_lists: []
+      };
+    }
+    if (!Object.keys(guildSubscriptions).length) return null;
+    return {
+      op: 37,
+      d: {
+        subscriptions: guildSubscriptions
+      }
+    };
+  }
+
+  function sendSubscriptions(ws, subscriptions) {
+    const payload = subscriptionBulkPayload(subscriptions);
+    if (!payload) return false;
+    if (sendGatewayPayload(ws, payload, "subscriptionErrors")) {
+      window.__discordBridgeWsStats.subscriptionsSent += 1;
+      return true;
+    }
+    return false;
   }
 
   function sendPendingSubscriptions() {
@@ -230,6 +274,42 @@ class DiscordWebsocketListener:
   window.__discordBridgeSubscribeChannels = function (subscriptions) {
     window.__discordBridgePendingSubscriptions = subscriptions || [];
     return sendPendingSubscriptions();
+  };
+
+  function sendLastMessages(ws, requests) {
+    if (!ws || ws.readyState !== OriginalWebSocket.OPEN) return false;
+    let sent = false;
+    for (const req of requests || []) {
+      const channelIds = (req.channel_ids || []).map(function (id) { return String(id); });
+      if (!channelIds.length) continue;
+      const payload = {
+        op: 34,
+        d: {
+          guild_id: String(req.guild_id),
+          channel_ids: channelIds
+        }
+      };
+      if (sendGatewayPayload(ws, payload, "lastMessageErrors")) {
+        window.__discordBridgeWsStats.lastMessagesSent += 1;
+        sent = true;
+      }
+    }
+    return sent;
+  }
+
+  function sendPendingLastMessageRequests() {
+    let sent = false;
+    for (const ws of window.__discordBridgeGatewaySockets) {
+      if (sendLastMessages(ws, window.__discordBridgePendingLastMessageRequests)) {
+        sent = true;
+      }
+    }
+    return sent;
+  }
+
+  window.__discordBridgeRequestLastMessages = function (requests) {
+    window.__discordBridgePendingLastMessageRequests = requests || [];
+    return sendPendingLastMessageRequests();
   };
 
   function pushPayload(text, source) {
@@ -402,14 +482,13 @@ class DiscordWebsocketListener:
         const streamInflater = createStreamInflater("page_hook_deflate_stream");
         window.__discordBridgeGatewaySockets.push(ws);
         window.__discordBridgeWsStats.gatewaySockets = window.__discordBridgeGatewaySockets.length;
-        ws.addEventListener("open", function () {
-          sendPendingSubscriptions();
-        });
-        ws.addEventListener("close", function () {
+        ws.addEventListener("close", function (event) {
           window.__discordBridgeGatewaySockets = window.__discordBridgeGatewaySockets.filter(function (item) {
             return item !== ws;
           });
           window.__discordBridgeWsStats.gatewaySockets = window.__discordBridgeGatewaySockets.length;
+          window.__discordBridgeWsStats.lastCloseCode = event && event.code;
+          window.__discordBridgeWsStats.lastCloseReason = (event && event.reason) || "";
         });
         ws.addEventListener("message", function (event) {
           window.__discordBridgeWsStats.seen += 1;
@@ -492,6 +571,8 @@ class DiscordWebsocketListener:
                 self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
                     events.append(gateway_event)
+                elif gateway_event.get("t") == "LAST_MESSAGES":
+                    events.extend(self._message_events_from_last_messages(gateway_event))
 
         return events
 
@@ -533,6 +614,75 @@ class DiscordWebsocketListener:
         if isinstance(payload, dict):
             return [payload]
         return []
+
+    def _message_events_from_last_messages(self, event: Dict) -> List[Dict]:
+        messages = self._extract_message_dicts(event.get("d"))
+        self.last_messages_seen += len(messages)
+        if not messages:
+            return []
+
+        events = []
+        messages_by_channel: Dict[str, List[Dict]] = {}
+        for data in messages:
+            channel_id = str(data.get("channel_id") or "")
+            message_id = str(data.get("id") or "")
+            if not channel_id or not message_id or channel_id not in self.channel_by_id:
+                continue
+            messages_by_channel.setdefault(channel_id, []).append(data)
+
+        for channel_id, channel_messages in messages_by_channel.items():
+            channel_messages.sort(key=lambda item: self._snowflake_sort_key(item.get("id")))
+            previous_id = self.last_message_ids_by_channel.get(channel_id)
+            latest_id = str(channel_messages[-1].get("id") or "")
+
+            if not previous_id:
+                self.last_message_ids_by_channel[channel_id] = latest_id
+                for data in channel_messages:
+                    message_id = str(data.get("id") or "")
+                    if message_id:
+                        self._remember_message(message_id)
+                continue
+
+            for data in channel_messages:
+                message_id = str(data.get("id") or "")
+                if not message_id or message_id in self.seen_message_ids:
+                    continue
+                if self._snowflake_sort_key(message_id) <= self._snowflake_sort_key(previous_id):
+                    continue
+                events.append({"t": "MESSAGE_CREATE", "d": data})
+                self.last_messages_matched += 1
+
+            self.last_message_ids_by_channel[channel_id] = latest_id
+
+        return events
+
+    @classmethod
+    def _extract_message_dicts(cls, value) -> List[Dict]:
+        messages = []
+        if isinstance(value, list):
+            for item in value:
+                messages.extend(cls._extract_message_dicts(item))
+            return messages
+
+        if not isinstance(value, dict):
+            return messages
+
+        if value.get("id") and value.get("channel_id"):
+            return [value]
+
+        for key, item in value.items():
+            if key in {"author", "member", "mentions", "referenced_message"}:
+                continue
+            if isinstance(item, (dict, list)):
+                messages.extend(cls._extract_message_dicts(item))
+        return messages
+
+    @staticmethod
+    def _snowflake_sort_key(message_id) -> int:
+        try:
+            return int(message_id)
+        except (TypeError, ValueError):
+            return 0
 
     def _message_from_gateway_event(self, event: Dict) -> Optional[DiscordMessage]:
         data = event.get("d") or {}
@@ -652,7 +802,7 @@ class DiscordWebsocketListener:
         ]
 
     def _subscribe_configured_channels(self, force: bool = False):
-        if not self.guild_channels or not self.driver:
+        if not self.subscribe_channels or not self.guild_channels or not self.driver:
             return
 
         now = time.time()
@@ -688,6 +838,43 @@ class DiscordWebsocketListener:
             f"{'sent' if sent else 'queued'} for "
             f"{sum(len(item['channel_ids']) for item in payload)} channels across "
             f"{len(payload)} guilds; hook={stats}"
+        )
+
+    def _request_last_messages(self, force: bool = False):
+        if not self.guild_channels or not self.driver or self.last_messages_interval <= 0:
+            return
+
+        now = time.time()
+        if not force and now - self.last_messages_request_at < self.last_messages_interval:
+            return
+
+        payload = self._subscription_payload()
+        try:
+            sent = self.driver.execute_script(
+                """
+                if (window.__discordBridgeRequestLastMessages) {
+                  return window.__discordBridgeRequestLastMessages(arguments[0]);
+                }
+                return null;
+                """,
+                payload,
+            )
+            self.last_messages_request_at = now
+        except Exception as e:
+            logger.warning(f"Failed to request Discord last messages: {e}")
+            return
+
+        if sent is None:
+            logger.warning(
+                "Discord WebSocket last-message hook is unavailable on the page; "
+                "fallback message capture is disabled."
+            )
+            return
+
+        logger.debug(
+            "Discord WebSocket last-message request "
+            f"{'sent' if sent else 'queued'} for "
+            f"{sum(len(item['channel_ids']) for item in payload)} channels across {len(payload)} guilds"
         )
 
     @staticmethod
@@ -752,6 +939,8 @@ class DiscordWebsocketListener:
             f"message_create_seen={self.message_create_seen}, "
             f"matched={self.message_create_matched}, "
             f"unmatched={self.message_create_unmatched}, "
+            f"last_messages_seen={self.last_messages_seen}, "
+            f"last_messages_matched={self.last_messages_matched}, "
             f"unmatched_channel_ids={sorted(self.unmatched_channel_ids)}, "
             f"hook={self._get_hook_stats()}"
         )

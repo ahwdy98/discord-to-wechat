@@ -29,6 +29,8 @@ class Config:
         self.send_queue_size: int = 1000
         self.discord_listener_mode: str = "browser_tabs"
         self.websocket_poll_interval: float = 0.2
+        self.websocket_last_messages_interval: float = 2.0
+        self.websocket_subscribe_channels: bool = False
         self.check_interval: int = 3
         self.headless_mode: bool = False
         self.chrome_load_images: bool = True
@@ -70,6 +72,8 @@ class Config:
                 self.send_queue_size = getattr(config_module, 'SEND_QUEUE_SIZE', 1000)
                 self.discord_listener_mode = str(getattr(config_module, 'DISCORD_LISTENER_MODE', 'browser_tabs')).strip().lower()
                 self.websocket_poll_interval = _as_float(getattr(config_module, 'WEBSOCKET_POLL_INTERVAL', 0.2), 0.2)
+                self.websocket_last_messages_interval = _as_float(getattr(config_module, 'WEBSOCKET_LAST_MESSAGES_INTERVAL', 2.0), 2.0)
+                self.websocket_subscribe_channels = getattr(config_module, 'WEBSOCKET_SUBSCRIBE_CHANNELS', False)
                 self.check_interval = getattr(config_module, 'CHECK_INTERVAL', 3)
                 self.headless_mode = getattr(config_module, 'HEADLESS_MODE', False)
                 self.chrome_load_images = getattr(config_module, 'CHROME_LOAD_IMAGES', True)
