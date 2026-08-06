@@ -62,6 +62,7 @@ class DiscordListener:
         self.channel_names = {}
         # 为每个频道维护独立的浏览器标签页句柄（window handle）
         self.channel_handles = {}
+        self._last_tab_reconcile_at = 0.0
     
     def init_chrome(self):
         """初始化Chrome浏览器"""
@@ -111,6 +112,182 @@ class DiscordListener:
         self.login_discord()
         logger.info("✅ 浏览器重启完成")
 
+    @staticmethod
+    def _channel_id_from_url(url: str) -> str:
+        """从 Discord 频道 URL 中提取频道 ID。"""
+        cleaned = str(url or "").split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        parts = [part for part in cleaned.split("/") if part]
+        if len(parts) >= 3 and parts[-3] == "channels":
+            return parts[-1]
+        return ""
+
+    def _current_url_matches_channel(self, current_url: str, channel_url: str) -> bool:
+        expected_channel_id = self._channel_id_from_url(channel_url)
+        actual_channel_id = self._channel_id_from_url(current_url)
+        return bool(expected_channel_id and actual_channel_id == expected_channel_id)
+
+    def _wait_for_channel_url(self, channel_url: str, timeout: float = 8.0) -> bool:
+        deadline = time.monotonic() + max(0.5, timeout)
+        while time.monotonic() < deadline:
+            try:
+                if self._current_url_matches_channel(self.driver.current_url or "", channel_url):
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.25)
+        return False
+
+    def _find_handle_for_channel(self, channel_url: str, skip_handles: Optional[set] = None) -> Optional[str]:
+        skip_handles = skip_handles or set()
+        original_handle = None
+        try:
+            original_handle = self.driver.current_window_handle
+        except Exception:
+            pass
+
+        for handle in list(self.driver.window_handles):
+            if handle in skip_handles:
+                continue
+            try:
+                self.driver.switch_to.window(handle)
+                if self._current_url_matches_channel(self.driver.current_url or "", channel_url):
+                    return handle
+            except Exception:
+                continue
+        try:
+            if original_handle and original_handle in self.driver.window_handles:
+                self.driver.switch_to.window(original_handle)
+        except Exception:
+            pass
+        return None
+
+    def _navigate_current_tab_to_channel(self, channel_url: str) -> bool:
+        self.driver.get(channel_url)
+        if not self._wait_for_channel_url(channel_url):
+            logger.warning(
+                "频道标签页导航后仍未落到目标频道: "
+                f"expected={channel_url}, current={self.driver.current_url}"
+            )
+            return False
+        self._install_dom_observer(channel_url)
+        self._refresh_channel_name(channel_url)
+        return True
+
+    def _reconcile_channel_tabs(self, force: bool = False) -> None:
+        """重新核对所有频道和标签页的绑定，修复重复/空白/串频道标签页。"""
+        try:
+            interval = max(5.0, float(os.getenv("DISCORD_TAB_RECONCILE_INTERVAL", "30")))
+        except ValueError:
+            interval = 30.0
+        now = time.monotonic()
+        if not force and now - self._last_tab_reconcile_at < interval:
+            return
+        self._last_tab_reconcile_at = now
+
+        handles = list(self.driver.window_handles)
+        if not handles:
+            return
+
+        configured_ids = {
+            self._channel_id_from_url(url): url
+            for url in self.channel_urls
+            if self._channel_id_from_url(url)
+        }
+        snapshots = []
+        original_handle = None
+        try:
+            original_handle = self.driver.current_window_handle
+        except Exception:
+            pass
+
+        for handle in handles:
+            try:
+                self.driver.switch_to.window(handle)
+                current_url = self.driver.current_url or ""
+                snapshots.append({
+                    "handle": handle,
+                    "url": current_url,
+                    "channel_id": self._channel_id_from_url(current_url),
+                })
+            except Exception:
+                snapshots.append({"handle": handle, "url": "", "channel_id": ""})
+
+        channel_id_counts = {}
+        for item in snapshots:
+            channel_id = item["channel_id"]
+            if channel_id:
+                channel_id_counts[channel_id] = channel_id_counts.get(channel_id, 0) + 1
+
+        selected_handles = set()
+        repaired = []
+
+        for channel_id, channel_url in configured_ids.items():
+            cached = self.channel_handles.get(channel_url)
+            cached_snapshot = next((item for item in snapshots if item["handle"] == cached), None)
+            if cached_snapshot and cached_snapshot["channel_id"] == channel_id:
+                selected_handles.add(cached)
+                continue
+
+            found_snapshot = next(
+                (
+                    item for item in snapshots
+                    if item["handle"] not in selected_handles and item["channel_id"] == channel_id
+                ),
+                None
+            )
+            if found_snapshot:
+                self.channel_handles[channel_url] = found_snapshot["handle"]
+                selected_handles.add(found_snapshot["handle"])
+                repaired.append(f"{channel_id}:reuse")
+                continue
+
+            target_handle = None
+            if cached_snapshot and cached_snapshot["handle"] not in selected_handles:
+                target_handle = cached_snapshot["handle"]
+
+            if not target_handle:
+                spare_snapshot = next(
+                    (
+                        item for item in snapshots
+                        if item["handle"] not in selected_handles
+                        and (
+                            item["channel_id"] not in configured_ids
+                            or channel_id_counts.get(item["channel_id"], 0) > 1
+                        )
+                    ),
+                    None
+                )
+                if spare_snapshot:
+                    target_handle = spare_snapshot["handle"]
+
+            if not target_handle:
+                try:
+                    self.driver.switch_to.new_window("tab")
+                    target_handle = self.driver.current_window_handle
+                    handles.append(target_handle)
+                    snapshots.append({"handle": target_handle, "url": "", "channel_id": ""})
+                except Exception as e:
+                    logger.warning(f"新建频道标签页失败: {channel_url}, error={e}")
+                    continue
+
+            try:
+                self.driver.switch_to.window(target_handle)
+                if self._navigate_current_tab_to_channel(channel_url):
+                    self.channel_handles[channel_url] = target_handle
+                    selected_handles.add(target_handle)
+                    repaired.append(f"{channel_id}:navigate")
+            except Exception as e:
+                logger.warning(f"修复频道标签页失败: {channel_url}, error={e}")
+
+        try:
+            if original_handle and original_handle in self.driver.window_handles:
+                self.driver.switch_to.window(original_handle)
+        except Exception:
+            pass
+
+        if repaired:
+            logger.info(f"频道标签页绑定已校准: {', '.join(repaired)}")
+
     def navigate_to_channel(self, channel_url: Optional[str] = None):
         """打开/切换到指定频道"""
         if channel_url:
@@ -127,6 +304,7 @@ class DiscordListener:
             # 切回第一个频道
             if self.channel_urls:
                 self.switch_to_channel(self.channel_urls[0])
+            self._reconcile_channel_tabs(force=True)
             logger.info("✅ 频道已成功打开")
 
     def switch_to_channel(self, channel_url: str) -> bool:
@@ -148,44 +326,37 @@ class DiscordListener:
                     self.driver.switch_to.window(handle)
                     time.sleep(0.1)
 
-                current_url = (self.driver.current_url or "").rstrip("/")
-                expected_url = channel_url.rstrip("/")
-                if not current_url.startswith(expected_url):
+                current_url = self.driver.current_url or ""
+                if not self._current_url_matches_channel(current_url, channel_url):
                     logger.warning(
                         "频道标签页 URL 已偏离，重新导航: "
-                        f"expected={expected_url}, current={current_url}"
+                        f"expected={channel_url}, current={current_url}"
                     )
-                    self.driver.get(channel_url)
-                    time.sleep(1)
-                    self._install_dom_observer(channel_url)
-                    self._refresh_channel_name(channel_url)
+                    existing_handle = self._find_handle_for_channel(channel_url, {handle})
+                    if existing_handle:
+                        self.channel_handles[channel_url] = existing_handle
+                        self.driver.switch_to.window(existing_handle)
+                        self._install_dom_observer(channel_url)
+                        self._refresh_channel_name(channel_url)
+                        return True
+                    if not self._navigate_current_tab_to_channel(channel_url):
+                        return False
                 return True
 
-            # 2. 尝试通过已开启的标签页反查URL匹配的句柄
-            # for h in self.driver.window_handles:
-            #     try:
-            #         self.driver.switch_to.window(h)
-            #         current = (self.driver.current_url or '').strip()
-            #         if current.startswith(channel_url) or channel_url in current:
-            #             self.channel_handles[channel_url] = h
-            #             return True
-            #     except Exception:
-            #         continue
-            # 2. (已移除) 不需要反查现有标签页，直接根据缓存或新建
-            # 这里的反查逻辑会导致每次打开新频道时都遍历旧标签页，造成不必要的切换和闪烁。
-            # 既然是自动化程序，我们假设状态由程序控制，直接进入步骤 3 进行打开/新建。
-            # 它唯一的用处是：如果你的浏览器崩溃重启了，并且自动恢复了上次打开的 5 个频道标签页。
-            # 此时程序重启，通过“反查”可以直接复用这 5 个标签页，而不用新开 5 个。
+            existing_handle = self._find_handle_for_channel(channel_url)
+            if existing_handle:
+                self.channel_handles[channel_url] = existing_handle
+                self.driver.switch_to.window(existing_handle)
+                self._install_dom_observer(channel_url)
+                self._refresh_channel_name(channel_url)
+                return True
 
             # 3. 未找到则需要打开
             # 如果是第一个初始化的频道（还没有任何句柄记录），则复用当前页面（如登录后的页面）
             if not self.channel_handles:
                 logger.info(f"⏳ 初始化频道，覆盖当前页面: {channel_url}")
-                self.driver.get(channel_url)
                 self.channel_handles[channel_url] = self.driver.current_window_handle
-                time.sleep(1)
-                self._install_dom_observer(channel_url)
-                return True
+                return self._navigate_current_tab_to_channel(channel_url)
 
             # 否则新建标签页
             logger.info("⏳ 未找到频道标签页，正在新建...")
@@ -206,12 +377,8 @@ class DiscordListener:
             # 遍历所有句柄查找未被记录的
             # === 使用 Selenium 4 新 API ===
             self.driver.switch_to.new_window('tab')
-            self.driver.get(channel_url)
             self.channel_handles[channel_url] = self.driver.current_window_handle
-            time.sleep(1)
-            self._install_dom_observer(channel_url)
-            
-            return True
+            return self._navigate_current_tab_to_channel(channel_url)
         except Exception as e:
             logger.error(f"切换频道标签页失败: {e}")
             return False
@@ -648,6 +815,11 @@ class DiscordListener:
             )
 
         while True:
+            try:
+                self._reconcile_channel_tabs()
+            except Exception as e:
+                logger.warning(f"频道标签页巡检失败: {e}")
+
             for channel_idx, channel_url in enumerate(self.channel_urls):
                 try:
                     if not self.switch_to_channel(channel_url):
