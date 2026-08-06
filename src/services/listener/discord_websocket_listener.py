@@ -42,7 +42,12 @@ class DiscordWebsocketListener:
         self.max_seen_messages = 5000
         self.last_frame_seen_at: Optional[float] = None
         self.last_parse_warning_at = 0.0
+        self.last_stats_log_at = 0.0
         self.cdp_hook_installed = False
+        self.event_type_counts: Dict[str, int] = {}
+        self.message_create_seen = 0
+        self.message_create_matched = 0
+        self.message_create_unmatched = 0
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -105,6 +110,7 @@ class DiscordWebsocketListener:
                     self.on_new_message(message)
 
                 self._warn_if_no_frames()
+                self._log_periodic_stats()
             except Exception as e:
                 logger.error(f"WebSocket listener error: {e}", exc_info=True)
                 time.sleep(3)
@@ -138,6 +144,7 @@ class DiscordWebsocketListener:
 
             self.last_frame_seen_at = time.time()
             for gateway_event in self._extract_gateway_events(payload):
+                self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
                     events.append(gateway_event)
 
@@ -154,7 +161,9 @@ class DiscordWebsocketListener:
     text: 0,
     binary: 0,
     decoded: 0,
-    errors: 0
+    errors: 0,
+    eventTypes: {},
+    channels: {}
   };
 
   const OriginalWebSocket = window.WebSocket;
@@ -169,6 +178,17 @@ class DiscordWebsocketListener:
       payload: trimmed,
       ts: Date.now()
     });
+    try {
+      const payload = JSON.parse(trimmed);
+      const eventType = payload.t || ("op:" + payload.op);
+      window.__discordBridgeWsStats.eventTypes[eventType] =
+        (window.__discordBridgeWsStats.eventTypes[eventType] || 0) + 1;
+      if (payload.d && payload.d.channel_id) {
+        const channelId = String(payload.d.channel_id);
+        window.__discordBridgeWsStats.channels[channelId] =
+          (window.__discordBridgeWsStats.channels[channelId] || 0) + 1;
+      }
+    } catch (e) {}
     if (window.__discordBridgeWsMessages.length > 1000) {
       window.__discordBridgeWsMessages.splice(0, window.__discordBridgeWsMessages.length - 1000);
     }
@@ -195,20 +215,15 @@ class DiscordWebsocketListener:
       let textBuffer = "";
 
       function drainBuffer() {
-        const trimmed = textBuffer.trim();
-        if (!trimmed) {
+        textBuffer = extractJsonPayloads(textBuffer, function (payload) {
+          pushPayload(payload, source);
+        });
+        if (!textBuffer.trim()) {
           textBuffer = "";
-          return;
         }
 
-        try {
-          JSON.parse(trimmed);
-          pushPayload(trimmed, source);
-          textBuffer = "";
-        } catch (e) {
-          if (textBuffer.length > 1024 * 1024) {
-            textBuffer = textBuffer.slice(-256 * 1024);
-          }
+        if (textBuffer.length > 1024 * 1024) {
+          textBuffer = textBuffer.slice(-256 * 1024);
         }
       }
 
@@ -229,6 +244,58 @@ class DiscordWebsocketListener:
     } catch (e) {
       return null;
     }
+  }
+
+  function extractJsonPayloads(text, onPayload) {
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let lastEnd = 0;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+
+      if (start < 0) {
+        if (ch === "{" || ch === "[") {
+          start = i;
+          depth = 1;
+          inString = false;
+          escaped = false;
+        }
+        continue;
+      }
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === "\"") {
+        inString = true;
+      } else if (ch === "{" || ch === "[") {
+        depth += 1;
+      } else if (ch === "}" || ch === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          const payload = text.slice(start, i + 1);
+          try {
+            JSON.parse(payload);
+            onPayload(payload);
+            lastEnd = i + 1;
+          } catch (e) {}
+          start = -1;
+        }
+      }
+    }
+
+    return text.slice(lastEnd);
   }
 
   async function decodeData(data, streamInflater) {
@@ -348,6 +415,7 @@ class DiscordWebsocketListener:
 
             self.last_frame_seen_at = time.time()
             for gateway_event in self._extract_gateway_events(payload):
+                self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
                     events.append(gateway_event)
 
@@ -398,9 +466,13 @@ class DiscordWebsocketListener:
             return None
 
         channel_id = str(data.get("channel_id") or "")
+        self.message_create_seen += 1
         channel_url = self.channel_by_id.get(channel_id)
         if not channel_url:
+            self.message_create_unmatched += 1
+            logger.info(f"WebSocket MESSAGE_CREATE ignored for unconfigured channel_id={channel_id}")
             return None
+        self.message_create_matched += 1
 
         message_id = str(data.get("id") or "")
         if not message_id or message_id in self.seen_message_ids:
@@ -512,3 +584,22 @@ class DiscordWebsocketListener:
             return stats if isinstance(stats, dict) else {}
         except Exception:
             return {}
+
+    def _record_gateway_event(self, event: Dict):
+        event_type = str(event.get("t") or f"op:{event.get('op')}")
+        self.event_type_counts[event_type] = self.event_type_counts.get(event_type, 0) + 1
+
+    def _log_periodic_stats(self):
+        now = time.time()
+        if now - self.last_stats_log_at < 60:
+            return
+
+        self.last_stats_log_at = now
+        logger.info(
+            "WebSocket stats: "
+            f"event_types={self.event_type_counts}, "
+            f"message_create_seen={self.message_create_seen}, "
+            f"matched={self.message_create_matched}, "
+            f"unmatched={self.message_create_unmatched}, "
+            f"hook={self._get_hook_stats()}"
+        )
