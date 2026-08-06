@@ -151,14 +151,20 @@ class DiscordListener:
         actual_channel_id = self._channel_id_from_url(current_url)
         return bool(expected_channel_id and actual_channel_id == expected_channel_id)
 
-    def _wait_for_channel_url(self, channel_url: str, timeout: float = 8.0) -> bool:
+    def _wait_for_channel_url(self, channel_url: str, timeout: float = 8.0, stable_seconds: float = 1.2) -> bool:
         deadline = time.monotonic() + max(0.5, timeout)
+        matched_since = None
         while time.monotonic() < deadline:
             try:
                 if self._current_url_matches_channel(self.driver.current_url or "", channel_url):
-                    return True
+                    if matched_since is None:
+                        matched_since = time.monotonic()
+                    if time.monotonic() - matched_since >= stable_seconds:
+                        return True
+                else:
+                    matched_since = None
             except Exception:
-                pass
+                matched_since = None
             time.sleep(0.25)
         return False
 
@@ -213,11 +219,12 @@ class DiscordListener:
         if not handles:
             return
 
-        configured_ids = {
-            self._channel_id_from_url(url): url
+        configured_pairs = [
+            (self._channel_id_from_url(url), url)
             for url in self.channel_urls
             if self._channel_id_from_url(url)
-        }
+        ]
+        configured_ids = {channel_id for channel_id, _url in configured_pairs}
         snapshots = []
         original_handle = None
         try:
@@ -237,53 +244,41 @@ class DiscordListener:
             except Exception:
                 snapshots.append({"handle": handle, "url": "", "channel_id": ""})
 
-        channel_id_counts = {}
-        for item in snapshots:
-            channel_id = item["channel_id"]
-            if channel_id:
-                channel_id_counts[channel_id] = channel_id_counts.get(channel_id, 0) + 1
-
+        unused_handles = []
         selected_handles = set()
+        satisfied_urls = set()
         repaired = []
 
-        for channel_id, channel_url in configured_ids.items():
+        for channel_id, channel_url in configured_pairs:
+            matches = [
+                item for item in snapshots
+                if item["handle"] not in selected_handles and item["channel_id"] == channel_id
+            ]
+            if not matches:
+                continue
+
             cached = self.channel_handles.get(channel_url)
-            cached_snapshot = next((item for item in snapshots if item["handle"] == cached), None)
-            if cached_snapshot and cached_snapshot["channel_id"] == channel_id:
-                selected_handles.add(cached)
-                continue
-
-            found_snapshot = next(
-                (
-                    item for item in snapshots
-                    if item["handle"] not in selected_handles and item["channel_id"] == channel_id
-                ),
-                None
-            )
-            if found_snapshot:
-                self.channel_handles[channel_url] = found_snapshot["handle"]
-                selected_handles.add(found_snapshot["handle"])
+            chosen = next((item for item in matches if item["handle"] == cached), matches[0])
+            self.channel_handles[channel_url] = chosen["handle"]
+            selected_handles.add(chosen["handle"])
+            satisfied_urls.add(channel_url)
+            if chosen["handle"] != cached:
                 repaired.append(f"{channel_id}:reuse")
+            for extra in matches:
+                if extra["handle"] != chosen["handle"]:
+                    unused_handles.append(extra["handle"])
+
+        for item in snapshots:
+            if item["handle"] in selected_handles or item["handle"] in unused_handles:
+                continue
+            if item["channel_id"] not in configured_ids:
+                unused_handles.append(item["handle"])
+
+        for channel_id, channel_url in configured_pairs:
+            if channel_url in satisfied_urls:
                 continue
 
-            target_handle = None
-            if cached_snapshot and cached_snapshot["handle"] not in selected_handles:
-                target_handle = cached_snapshot["handle"]
-
-            if not target_handle:
-                spare_snapshot = next(
-                    (
-                        item for item in snapshots
-                        if item["handle"] not in selected_handles
-                        and (
-                            item["channel_id"] not in configured_ids
-                            or channel_id_counts.get(item["channel_id"], 0) > 1
-                        )
-                    ),
-                    None
-                )
-                if spare_snapshot:
-                    target_handle = spare_snapshot["handle"]
+            target_handle = unused_handles.pop(0) if unused_handles else None
 
             if not target_handle:
                 try:
@@ -300,6 +295,7 @@ class DiscordListener:
                 if self._navigate_current_tab_to_channel(channel_url):
                     self.channel_handles[channel_url] = target_handle
                     selected_handles.add(target_handle)
+                    satisfied_urls.add(channel_url)
                     repaired.append(f"{channel_id}:navigate")
             except Exception as e:
                 logger.warning(f"修复频道标签页失败: {channel_url}, error={e}")
