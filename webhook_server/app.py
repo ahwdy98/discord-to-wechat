@@ -886,7 +886,7 @@ def render_channel_options(selected_channel_url: str) -> str:
         channel_url = str(channel.get("channel_url") or "")
         channel_name = str(channel.get("channel_name") or "").strip()
         count = int(channel.get("message_count") or 0)
-        label = channel_name or channel_url.rsplit("/", 1)[-1] or channel_url
+        label = channel_display_label(channel_name, channel_url)
         if count:
             label = f"{label} ({count})"
         selected = " selected" if channel_url == selected_channel_url else ""
@@ -900,6 +900,14 @@ def render_channel_options(selected_channel_url: str) -> str:
         safe_url = html.escape(selected_channel_url, quote=True)
         options.append(f'<option value="{safe_url}" selected>{safe_url}</option>')
     return "\n".join(options)
+
+
+def channel_display_label(channel_name: str, channel_url: str) -> str:
+    channel_id = channel_url.rstrip("/").rsplit("/", 1)[-1] if channel_url else ""
+    channel_name = str(channel_name or "").strip()
+    if channel_name and channel_id and channel_id not in channel_name:
+        return f"{channel_name} · {channel_id}"
+    return channel_name or channel_id or channel_url
 
 
 def render_message_card(message: Dict[str, Any]) -> str:
@@ -926,7 +934,7 @@ def render_message_card(message: Dict[str, Any]) -> str:
 
     content = html.escape(message.get("content") or "")
     username = html.escape(message.get("username") or "")
-    channel = html.escape(message.get("channel_name") or "")
+    channel = html.escape(channel_display_label(message.get("channel_name") or "", message.get("channel_url") or ""))
     timestamp = html.escape(message_time(message))
     created_at = html.escape(message.get("created_at_local") or message.get("created_at") or "")
     return f"""

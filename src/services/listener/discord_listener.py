@@ -58,6 +58,7 @@ class DiscordListener:
         self.dom_forward_after_utc = None
         self.dom_startup_quarantine_until = 0
         self.dom_ignored_old_message_ids = set()
+        self.channel_names = {}
         # 为每个频道维护独立的浏览器标签页句柄（window handle）
         self.channel_handles = {}
     
@@ -204,6 +205,10 @@ class DiscordListener:
     
     def get_channel_name(self, channel_url: str) -> str:
         """从URL中提取频道标识"""
+        cached_name = self.channel_names.get(channel_url)
+        if cached_name:
+            return cached_name
+
         try:
             parts = channel_url.rstrip('/').split('/')
             if len(parts) >= 2:
@@ -211,6 +216,44 @@ class DiscordListener:
             return "未知频道"
         except:
             return "未知频道"
+
+    def _refresh_channel_name(self, channel_url: str) -> str:
+        try:
+            channel_name = self.driver.execute_script(
+                """
+                function clean(value) {
+                  return String(value || "")
+                    .replace(/^#/, "")
+                    .replace(/^["']|["']$/g, "")
+                    .trim();
+                }
+
+                const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
+                if (header) {
+                  const text = clean((header.innerText || header.textContent || "").replace(/\\s*\\n\\s*/g, ": "));
+                  if (text) return text;
+                }
+
+                const titleParts = String(document.title || "").split("|").map(part => clean(part));
+                if (titleParts.length >= 2) {
+                  const channel = titleParts[1];
+                  const server = titleParts[2] || "";
+                  if (channel) return server ? `${server}: ${channel}` : channel;
+                }
+                return "";
+                """
+            )
+            channel_name = str(channel_name or "").strip()
+            if channel_name:
+                previous = self.channel_names.get(channel_url)
+                self.channel_names[channel_url] = channel_name
+                if previous != channel_name:
+                    logger.info(f"Resolved Discord channel name: {channel_name} ({channel_url})")
+                return channel_name
+        except Exception as e:
+            logger.debug(f"Failed to refresh Discord channel name: {e}")
+
+        return self.get_channel_name(channel_url)
     
     def _dom_observer_script(self) -> str:
         return r"""
@@ -406,23 +449,93 @@ class DiscordListener:
 
     def _drain_dom_events(self, channel_url: str) -> List[DiscordMessage]:
         try:
-            raw_messages = self.driver.execute_script(
+            result = self.driver.execute_script(
                 """
                 if (!window.__discordDomBridgeInstalled) return null;
+
+                function clean(value) {
+                  return String(value || "")
+                    .replace(/^#/, "")
+                    .replace(/^["']|["']$/g, "")
+                    .trim();
+                }
+
+                function channelName() {
+                  const header = document.querySelector('h1[class*="title"], div[class*="titleWrapper"] h1');
+                  if (header) {
+                    const text = clean((header.innerText || header.textContent || "").replace(/\\s*\\n\\s*/g, ": "));
+                    if (text) return text;
+                  }
+
+                  const titleParts = String(document.title || "").split("|").map(part => clean(part));
+                  if (titleParts.length >= 2) {
+                    const channel = titleParts[1];
+                    const server = titleParts[2] || "";
+                    if (channel) return server ? `${server}: ${channel}` : channel;
+                  }
+                  return "";
+                }
+
+                function findMessageScroller() {
+                  const candidates = Array.from(document.querySelectorAll('[class*="scroller"], main, [data-list-id]'))
+                    .filter(el => el && el.scrollHeight > el.clientHeight + 50);
+                  candidates.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+                  return candidates[0] || document.scrollingElement || document.documentElement;
+                }
+
+                function keepAtLatest() {
+                  const labels = ["Jump to Present", "跳至最新", "跳到最新", "转到最新"];
+                  for (const button of document.querySelectorAll('button,[role="button"]')) {
+                    const text = [
+                      button.getAttribute("aria-label"),
+                      button.getAttribute("title"),
+                      button.innerText,
+                      button.textContent
+                    ].join(" ");
+                    if (labels.some(label => text && text.includes(label))) {
+                      button.click();
+                    }
+                  }
+
+                  const scroller = findMessageScroller();
+                  if (!scroller) return false;
+                  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+                  if (distance > 240) {
+                    scroller.scrollTop = scroller.scrollHeight;
+                    return true;
+                  }
+                  return false;
+                }
+
                 const queue = window.__discordDomBridgeQueue || [];
                 window.__discordDomBridgeQueue = [];
-                return queue;
+                return { messages: queue, channelName: channelName(), scrolled: keepAtLatest() };
                 """
             )
         except Exception as e:
             logger.warning(f"Failed to drain Discord DOM event queue: {e}")
             return []
 
-        if raw_messages is None:
+        if result is None:
             self._install_dom_observer(channel_url)
+            self._refresh_channel_name(channel_url)
             return []
 
-        channel_name = self.get_channel_name(channel_url)
+        if isinstance(result, dict):
+            raw_messages = result.get("messages") or []
+            channel_name = str(result.get("channelName") or "").strip()
+        else:
+            raw_messages = result or []
+            channel_name = ""
+
+        if channel_name:
+            previous = self.channel_names.get(channel_url)
+            self.channel_names[channel_url] = channel_name
+            if previous != channel_name:
+                logger.info(f"Resolved Discord channel name: {channel_name} ({channel_url})")
+        else:
+            channel_name = self._refresh_channel_name(channel_url)
+
         messages = []
         for raw in raw_messages or []:
             msg = self._message_from_dom_event(raw, channel_url, channel_name)
