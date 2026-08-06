@@ -227,6 +227,20 @@ Docker Compose 启动后会同时启动 `webhook-server` 服务：
 docker compose up -d --build webhook-server
 ```
 
+如果只修改了 `webhook_server/` 里的服务端代码或转发逻辑，只重建服务端即可，不需要重启 Discord 监听容器：
+
+```bash
+docker compose up -d --build webhook-server
+```
+
+也可以只使用独立 Compose 文件运行服务端：
+
+```bash
+docker compose -f docker-compose.webhook.yml up -d --build
+```
+
+如果只修改 `FORWARD_ROUTES_JSON`、`WEBHOOK_TOKEN` 等环境变量，也只需要重建/重启 `webhook-server`。只有修改 Discord 监听逻辑、`config.py` 里的监听配置或主项目 sender 时，才需要重建 `discord-to-wechat`。
+
 Web 页面：
 
 - `http://localhost:8080/messages`
