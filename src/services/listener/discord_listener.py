@@ -223,6 +223,7 @@ class DiscordListener:
                 """
                 function clean(value) {
                   return String(value || "")
+                    .trim()
                     .replace(/^#/, "")
                     .replace(/^["']|["']$/g, "")
                     .trim();
@@ -455,6 +456,7 @@ class DiscordListener:
 
                 function clean(value) {
                   return String(value || "")
+                    .trim()
                     .replace(/^#/, "")
                     .replace(/^["']|["']$/g, "")
                     .trim();
