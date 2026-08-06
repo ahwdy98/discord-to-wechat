@@ -18,7 +18,7 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +26,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -39,10 +44,57 @@ FORWARD_WORKERS = int(os.getenv("FORWARD_WORKERS", "2"))
 FORWARD_TIMEOUT = int(os.getenv("FORWARD_TIMEOUT", "30"))
 FORWARD_QUEUE: "queue.Queue[int]" = queue.Queue()
 FORWARD_ROUTES: List[Dict[str, Any]] = []
+WEBHOOK_TIMEZONE = os.getenv("WEBHOOK_TIMEZONE", "Asia/Shanghai")
+
+
+def load_display_timezone():
+    if ZoneInfo:
+        try:
+            return ZoneInfo(WEBHOOK_TIMEZONE)
+        except Exception:
+            print(f"Invalid WEBHOOK_TIMEZONE={WEBHOOK_TIMEZONE!r}, fallback to Asia/Shanghai", file=sys.stderr)
+    return timezone(timedelta(hours=8))
+
+
+DISPLAY_TIMEZONE = load_display_timezone()
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=DISPLAY_TIMEZONE)
+    return parsed
+
+
+def format_display_time(value: Any) -> str:
+    parsed = parse_datetime(value)
+    if not parsed:
+        return str(value or "")
+    return parsed.astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def message_time(message: Dict[str, Any]) -> str:
+    return (
+        message.get("timestamp_local")
+        or format_display_time(message.get("timestamp"))
+        or message.get("timestamp")
+        or message.get("created_at_local")
+        or format_display_time(message.get("created_at"))
+        or message.get("created_at")
+        or ""
+    )
 
 
 def init_db() -> None:
@@ -379,8 +431,9 @@ def build_feishu_payload(message: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if message.get("channel_name"):
         rows.append([{"tag": "text", "text": f"频道: {message.get('channel_name')}"}])
-    if message.get("timestamp"):
-        rows.append([{"tag": "text", "text": f"时间: {message.get('timestamp')}"}])
+    display_time = message_time(message)
+    if display_time:
+        rows.append([{"tag": "text", "text": f"时间: {display_time}"}])
     rows.append([{"tag": "text", "text": "----------------"}])
 
     for line in split_content_lines(message.get("content") or "", len(message.get("attachments") or [])):
@@ -439,8 +492,9 @@ def build_enterprise_wechat_markdown(message: Dict[str, Any]) -> str:
     content = f"来自 **{message.get('username') or '未知用户'}** 的消息\n"
     if message.get("channel_name"):
         content += f"> 频道: {message.get('channel_name')}\n"
-    if message.get("timestamp"):
-        content += f"> 时间: {message.get('timestamp')}\n\n"
+    display_time = message_time(message)
+    if display_time:
+        content += f"> 时间: {display_time}\n\n"
 
     lines = split_content_lines(message.get("content") or "", len(message.get("attachments") or []))
     content += "\n".join(lines) if lines else ""
@@ -508,6 +562,8 @@ def row_to_message(row: sqlite3.Row) -> Dict[str, Any]:
         message["raw"] = json.loads(message.pop("raw_json") or "{}")
     except json.JSONDecodeError:
         message["raw"] = {}
+    message["timestamp_local"] = format_display_time(message.get("timestamp"))
+    message["created_at_local"] = format_display_time(message.get("created_at"))
     return message
 
 
@@ -595,6 +651,9 @@ def attach_forward_statuses(messages: List[Dict[str, Any]]) -> None:
             delivery["response"] = json.loads(delivery.pop("response_json") or "{}")
         except json.JSONDecodeError:
             delivery["response"] = {}
+        delivery["created_at_local"] = format_display_time(delivery.get("created_at"))
+        delivery["updated_at_local"] = format_display_time(delivery.get("updated_at"))
+        delivery["sent_at_local"] = format_display_time(delivery.get("sent_at"))
         by_message.setdefault(delivery["message_id"], []).append(delivery)
 
     for message in messages:
@@ -818,8 +877,8 @@ def render_message_card(message: Dict[str, Any]) -> str:
     content = html.escape(message.get("content") or "")
     username = html.escape(message.get("username") or "")
     channel = html.escape(message.get("channel_name") or "")
-    timestamp = html.escape(message.get("timestamp") or "")
-    created_at = html.escape(message.get("created_at") or "")
+    timestamp = html.escape(message_time(message))
+    created_at = html.escape(message.get("created_at_local") or message.get("created_at") or "")
     return f"""
     <article class="message">
       <div class="meta">
@@ -854,6 +913,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), RequestHandler)
     print(f"Webhook server listening on http://{HOST}:{PORT}")
     print(f"SQLite database: {DB_PATH}")
+    print(f"Display timezone: {WEBHOOK_TIMEZONE}")
     server.serve_forever()
 
 
