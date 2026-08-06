@@ -42,6 +42,7 @@ class DiscordWebsocketListener:
         self.max_seen_messages = 5000
         self.last_frame_seen_at: Optional[float] = None
         self.last_parse_warning_at = 0.0
+        self.cdp_hook_installed = False
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -79,6 +80,7 @@ class DiscordWebsocketListener:
         logger.info(f"WebSocket mode opens one Discord page only: {target_url}")
         self.driver.get(target_url)
         time.sleep(5)
+        self._ensure_websocket_hook_active(target_url)
         self._drain_performance_logs()
         logger.info("WebSocket listener page is ready")
 
@@ -141,8 +143,8 @@ class DiscordWebsocketListener:
 
         return events
 
-    def _install_websocket_hook(self):
-        script = r"""
+    def _websocket_hook_script(self) -> str:
+        return r"""
 (function () {
   if (window.__discordBridgeWsHookInstalled) return;
   window.__discordBridgeWsHookInstalled = true;
@@ -292,11 +294,37 @@ class DiscordWebsocketListener:
   window.WebSocket = WrappedWebSocket;
 })();
 """
+
+    def _install_websocket_hook(self) -> bool:
+        script = self._websocket_hook_script()
         try:
             execute_cdp_command(self.driver, "Page.addScriptToEvaluateOnNewDocument", {"source": script})
+            self.cdp_hook_installed = True
             logger.info("Discord page WebSocket hook installed")
+            return True
         except Exception as e:
+            self.cdp_hook_installed = False
             logger.warning(f"Failed to install Discord page WebSocket hook: {e}")
+            return False
+
+    def _ensure_websocket_hook_active(self, target_url: str):
+        stats = self._get_hook_stats()
+        if stats:
+            logger.info(f"Discord page WebSocket hook is active: {stats}")
+            return
+
+        logger.warning("Discord page WebSocket hook is not visible in the current page, reinstalling before reload...")
+        if not self._install_websocket_hook():
+            logger.warning("Discord page WebSocket hook cannot be installed because CDP is unavailable")
+            return
+
+        try:
+            self.driver.get(target_url)
+            time.sleep(5)
+            stats = self._get_hook_stats()
+            logger.info(f"Discord page WebSocket hook status after reload: {stats}")
+        except Exception as e:
+            logger.warning(f"Failed to reload Discord page after hook reinstall: {e}")
 
     def _read_hooked_gateway_events(self) -> List[Dict]:
         try:
@@ -472,7 +500,7 @@ class DiscordWebsocketListener:
         stats = self._get_hook_stats()
         logger.warning(
             "No parseable Discord WebSocket JSON frames have been read yet. "
-            f"Page hook stats: {stats}. "
+            f"Page hook stats: {stats}, cdp_hook_installed={self.cdp_hook_installed}. "
             "If this continues after Discord is fully loaded and new messages arrive, "
             "temporarily switch back to DISCORD_LISTENER_MODE = 'browser_tabs'."
         )
