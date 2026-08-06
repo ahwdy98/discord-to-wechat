@@ -56,6 +56,29 @@ Linux `docker-compose.linux.yml` 的 host 网络模式下，`WEBHOOK_SERVER_URL`
 WEBHOOK_SERVER_URL = "http://localhost:8080/webhook/messages"
 ```
 
+按频道指定不同发送方式：
+
+```python
+# 默认没命中的频道走企业微信
+SENDER_TYPE = "enterprise_wechat"
+ENTERPRISE_WECHAT_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=default"
+
+SENDER_ROUTES = [
+    {
+        "channel": "https://discord.com/channels/服务器ID/飞书频道ID",
+        "sender_type": "feishu",
+        "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx",
+        "secret": ""
+    },
+    {
+        "channel": "https://discord.com/channels/服务器ID/存档频道ID",
+        "sender_type": "webhook_server",
+        "url": "http://webhook-server:8080/webhook/messages",
+        "token": ""
+    }
+]
+```
+
 ### 2. 启动方式（3种）
 
 #### 方式一：本地启动（Python 直接运行）

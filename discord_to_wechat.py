@@ -9,7 +9,7 @@ Discord到微信/企业微信消息桥接器
 2. 企业微信机器人（Webhook）- 发送到企业微信群
 """
 
-from typing import List, Dict
+from typing import Dict
 
 # 导入核心模块
 from src.core.config_manager import app_config
@@ -23,9 +23,12 @@ from src.services.sender.wechat import WechatSender
 from src.services.sender.working_wechat import WorkingWechatSender
 from src.services.sender.feishu import FeishuSender
 from src.services.sender.webhook_server import WebhookServerSender
+from src.services.sender.router import ChannelRoutingSender
 
 # 初始化日志
 logger = setup_logger()
+
+SUPPORTED_SENDER_TYPES = ["wechat", "enterprise_wechat", "feishu", "webhook_server"]
 
 
 class DiscordToWechatBridge:
@@ -49,61 +52,92 @@ class DiscordToWechatBridge:
     
     def _create_sender(self) -> MessageSender:
         """创建消息发送器"""
-        sender_type = self.config.sender_type
-        
+        default_sender = self._create_sender_by_type(self.config.sender_type, {})
+
+        if self.config.sender_routes:
+            logger.info(f"🔀 已启用频道发送路由: {len(self.config.sender_routes)} 条")
+            return ChannelRoutingSender(
+                default_sender=default_sender,
+                routes=self.config.sender_routes,
+                sender_factory=self._create_sender_by_type
+            )
+
+        return default_sender
+
+    def _create_sender_by_type(self, sender_type: str, overrides: Dict) -> MessageSender:
+        """按类型创建消息发送器，可用 overrides 覆盖默认配置"""
         if sender_type == "wechat":
             logger.info("📱 使用发送方式: 微信个人号")
-            if not self.config.wechat_receiver_name or self.config.wechat_receiver_name == "na":
+            receiver_name = overrides.get("wechat_receiver_name") or self.config.wechat_receiver_name
+            if not receiver_name or receiver_name == "na":
                 logger.error("❌ 请先在 config.py 中配置 WECHAT_RECEIVER_NAME")
                 raise ValueError("微信接收者名称未配置")
-            return WechatSender(receiver_name=self.config.wechat_receiver_name)
+            return WechatSender(receiver_name=receiver_name)
         
         elif sender_type == "enterprise_wechat":
             logger.info("🤖 使用发送方式: 企业微信机器人")
             
-            has_list_config = self.config.enterprise_wechat_webhook_list and len(self.config.enterprise_wechat_webhook_list) > 0
-            has_single_config = self.config.enterprise_wechat_webhook and "YOUR_WEBHOOK_KEY" not in self.config.enterprise_wechat_webhook
+            webhook_url = (
+                overrides.get("enterprise_wechat_webhook")
+                or overrides.get("webhook")
+                or overrides.get("hook")
+                or self.config.enterprise_wechat_webhook
+            )
+            webhook_configs = overrides.get("enterprise_wechat_webhook_list", self.config.enterprise_wechat_webhook_list)
+            has_list_config = webhook_configs and len(webhook_configs) > 0
+            has_single_config = webhook_url and "YOUR_WEBHOOK_KEY" not in webhook_url
             
             if not has_list_config and not has_single_config:
                 logger.error("❌ 请先在 config.py 中配置 ENTERPRISE_WECHAT_WEBHOOK_LIST 或 ENTERPRISE_WECHAT_WEBHOOK")
                 raise ValueError("企业微信Webhook未配置")
             
             return WorkingWechatSender(
-                webhook_url=self.config.enterprise_wechat_webhook,
-                webhook_configs=self.config.enterprise_wechat_webhook_list
+                webhook_url=webhook_url,
+                webhook_configs=webhook_configs
             )
 
         elif sender_type == "feishu":
             logger.info("🚀 使用发送方式: 飞书自定义机器人")
 
-            has_list_config = self.config.feishu_webhook_list and len(self.config.feishu_webhook_list) > 0
-            has_single_config = self.config.feishu_webhook and "YOUR_WEBHOOK" not in self.config.feishu_webhook
+            webhook_url = (
+                overrides.get("feishu_webhook")
+                or overrides.get("webhook")
+                or overrides.get("hook")
+                or self.config.feishu_webhook
+            )
+            secret = overrides.get("feishu_secret") or overrides.get("secret") or self.config.feishu_secret
+            webhook_configs = overrides.get("feishu_webhook_list", self.config.feishu_webhook_list)
+            has_list_config = webhook_configs and len(webhook_configs) > 0
+            has_single_config = webhook_url and "YOUR_WEBHOOK" not in webhook_url
 
             if not has_list_config and not has_single_config:
                 logger.error("❌ 请先在 config.py 中配置 FEISHU_WEBHOOK_LIST 或 FEISHU_WEBHOOK")
                 raise ValueError("飞书Webhook未配置")
 
             return FeishuSender(
-                webhook_url=self.config.feishu_webhook,
-                secret=self.config.feishu_secret,
-                webhook_configs=self.config.feishu_webhook_list
+                webhook_url=webhook_url,
+                secret=secret,
+                webhook_configs=webhook_configs
             )
 
         elif sender_type == "webhook_server":
             logger.info("🗄️ 使用发送方式: 本地 Webhook Server")
 
-            if not self.config.webhook_server_url:
+            endpoint_url = overrides.get("webhook_server_url") or overrides.get("url") or self.config.webhook_server_url
+            token = overrides.get("webhook_server_token") or overrides.get("token") or self.config.webhook_server_token
+
+            if not endpoint_url:
                 logger.error("❌ 请先在 config.py 中配置 WEBHOOK_SERVER_URL")
                 raise ValueError("Webhook Server URL 未配置")
 
             return WebhookServerSender(
-                endpoint_url=self.config.webhook_server_url,
-                token=self.config.webhook_server_token
+                endpoint_url=endpoint_url,
+                token=token
             )
         
         else:
             logger.error(f"❌ 不支持的发送器类型: {sender_type}")
-            logger.error("   支持的类型: wechat, enterprise_wechat, feishu, webhook_server")
+            logger.error(f"   支持的类型: {', '.join(SUPPORTED_SENDER_TYPES)}")
             raise ValueError(f"不支持的发送器类型: {sender_type}")
     
     def _on_new_message(self, message: DiscordMessage):
@@ -181,9 +215,22 @@ def validate_config():
         logger.error("❌ 请先在 config.py 中配置 DISCORD_CHANNEL_URLS")
         return False
     
-    if app_config.sender_type not in ["wechat", "enterprise_wechat", "feishu", "webhook_server"]:
+    if app_config.sender_type not in SUPPORTED_SENDER_TYPES:
         logger.error(f"❌ SENDER_TYPE 配置错误: {app_config.sender_type}")
         return False
+
+    for index, route in enumerate(app_config.sender_routes or [], 1):
+        route_sender_type = route.get("sender_type") or route.get("type")
+        route_channels = route.get("channels") or ([route.get("channel")] if route.get("channel") else [])
+        if isinstance(route_channels, str):
+            route_channels = [route_channels]
+
+        if route_sender_type not in SUPPORTED_SENDER_TYPES:
+            logger.error(f"❌ SENDER_ROUTES[{index}] sender_type 配置错误: {route_sender_type}")
+            return False
+        if not route_channels:
+            logger.error(f"❌ SENDER_ROUTES[{index}] 请配置 channel 或 channels")
+            return False
     
     if app_config.sender_type == "wechat":
         if "你的大号" in app_config.wechat_receiver_name or app_config.wechat_receiver_name == "na":
@@ -246,6 +293,8 @@ def print_startup_info():
     
     # Discord频道信息
     logger.info(f"\n📋 监控 {len(app_config.discord_channel_urls)} 个Discord频道")
+    if app_config.sender_routes:
+        logger.info(f"🔀 频道发送路由: {len(app_config.sender_routes)} 条")
     
     # 运行配置
     logger.info(f"\n⚙️  运行配置:")

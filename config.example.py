@@ -6,6 +6,39 @@
 #   "webhook_server"     - 自建Webhook服务端（写入SQLite，提供Web/API查看）
 SENDER_TYPE = "enterprise_wechat"  # 可改为 wechat / enterprise_wechat / feishu / webhook_server
 
+# 可选：按 Discord 频道覆盖发送方式
+# 没有命中 SENDER_ROUTES 的频道，仍然使用上面的 SENDER_TYPE 默认发送方式。
+# 支持字段：
+# - channel: 单个 Discord 频道 URL
+# - channels: 多个 Discord 频道 URL
+# - sender_type/type: wechat / enterprise_wechat / feishu / webhook_server
+# - webhook/hook: 企业微信或飞书的单个 Webhook 地址
+# - secret: 飞书签名密钥
+# - url: webhook_server 写入地址
+# - token: webhook_server 鉴权 token
+SENDER_ROUTES = [
+    # {
+    #     "channel": "https://discord.com/channels/服务器ID/频道ID",
+    #     "sender_type": "feishu",
+    #     "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx",
+    #     "secret": ""
+    # },
+    # {
+    #     "channel": "https://discord.com/channels/服务器ID/另一个频道ID",
+    #     "sender_type": "webhook_server",
+    #     "url": "http://webhook-server:8080/webhook/messages",
+    #     "token": ""
+    # },
+    # {
+    #     "channels": [
+    #         "https://discord.com/channels/服务器ID/频道ID1",
+    #         "https://discord.com/channels/服务器ID/频道ID2",
+    #     ],
+    #     "sender_type": "enterprise_wechat",
+    #     "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx"
+    # }
+]
+
 # Discord配置
 # 可以配置多个频道URL，程序会轮询监听所有频道
 DISCORD_CHANNEL_URLS = [

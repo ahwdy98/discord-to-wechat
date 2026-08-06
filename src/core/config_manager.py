@@ -8,6 +8,7 @@ class Config:
     
     def __init__(self):
         self.sender_type: str = "wechat"
+        self.sender_routes: List[Dict[str, Any]] = []
         self.discord_channel_urls: List[str] = []
         self.wechat_receiver_name: str = ""
         self.enterprise_wechat_webhook: str = ""
@@ -35,6 +36,7 @@ class Config:
                 
                 # 安全读取配置
                 self.sender_type = getattr(config_module, 'SENDER_TYPE', 'wechat')
+                self.sender_routes = getattr(config_module, 'SENDER_ROUTES', [])
                 self.discord_channel_urls = getattr(config_module, 'DISCORD_CHANNEL_URLS', [])
                 self.wechat_receiver_name = getattr(config_module, 'WECHAT_RECEIVER_NAME', '')
                 self.enterprise_wechat_webhook = getattr(config_module, 'ENTERPRISE_WECHAT_WEBHOOK', '')
