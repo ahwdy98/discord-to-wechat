@@ -60,9 +60,32 @@ class Config:
                 self.chrome_load_images = getattr(config_module, 'CHROME_LOAD_IMAGES', True)
                 self.chrome_disable_notifications = getattr(config_module, 'CHROME_DISABLE_NOTIFICATIONS', True)
                 self.chrome_mute_audio = getattr(config_module, 'CHROME_MUTE_AUDIO', True)
+                self._derive_discord_channels_from_routes()
         except Exception as e:
             print(f"加载配置文件失败: {e}")
             # 可以抛出异常或者使用默认值
+
+    def _derive_discord_channels_from_routes(self):
+        """当未显式配置 DISCORD_CHANNEL_URLS 时，从 SENDER_ROUTES 推导监听频道。"""
+        if self.discord_channel_urls:
+            return
+
+        derived_channels = []
+        seen = set()
+        for route in self.sender_routes or []:
+            channels = route.get('channels')
+            if isinstance(channels, str):
+                channels = [channels]
+            if channels is None and route.get('channel'):
+                channels = [route.get('channel')]
+
+            for channel in channels or []:
+                normalized = str(channel or '').rstrip('/')
+                if normalized and normalized not in seen:
+                    derived_channels.append(normalized)
+                    seen.add(normalized)
+
+        self.discord_channel_urls = derived_channels
 
 # 全局单例
 app_config = Config()

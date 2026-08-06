@@ -228,7 +228,7 @@ class DiscordToWechatBridge:
 def validate_config():
     """验证配置是否正确"""
     if not app_config.discord_channel_urls:
-        logger.error("❌ 请先在 config.py 中配置 DISCORD_CHANNEL_URLS")
+        logger.error("❌ 请先在 config.py 中配置 DISCORD_CHANNEL_URLS，或在 SENDER_ROUTES 中配置 channel/channels")
         return False
     
     if app_config.sender_type not in SUPPORTED_SENDER_TYPES:

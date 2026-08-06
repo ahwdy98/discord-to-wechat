@@ -14,7 +14,7 @@ cp config.example.py config.py
 
 编辑 `config.py`：
 
-- 添加 Discord 频道 URL 到 `DISCORD_CHANNEL_URLS`
+- 添加 Discord 频道 URL 到 `DISCORD_CHANNEL_URLS`；如果已在 `SENDER_ROUTES` 配置 `channel/channels`，也可以留空自动推导
 - 选择发送方式 `SENDER_TYPE`（`wechat`、`enterprise_wechat`、`feishu` 或 `webhook_server`）
 - 如使用企业微信，填写 `ENTERPRISE_WECHAT_WEBHOOK` 或 `ENTERPRISE_WECHAT_WEBHOOK_LIST`
 - 如使用飞书，填写 `FEISHU_WEBHOOK` 或 `FEISHU_WEBHOOK_LIST`；如果飞书机器人开启了签名校验，填写 `FEISHU_SECRET`

@@ -40,7 +40,8 @@ SENDER_ROUTES = [
 ]
 
 # Discord配置
-# 可以配置多个频道URL，程序会轮询监听所有频道
+# 可以配置多个频道URL，程序会轮询监听所有频道。
+# 如果留空，程序会自动从 SENDER_ROUTES 的 channel/channels 推导监听频道。
 DISCORD_CHANNEL_URLS = [
     # 在这里添加更多频道，例如：
     # "https://discord.com/channels/服务器ID/频道ID",
