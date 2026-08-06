@@ -60,7 +60,8 @@ class DiscordToWechatBridge:
                 chrome_disable_notifications=self.config.chrome_disable_notifications,
                 chrome_mute_audio=self.config.chrome_mute_audio,
                 last_messages_interval=self.config.websocket_last_messages_interval,
-                subscribe_channels=self.config.websocket_subscribe_channels
+                subscribe_channels=self.config.websocket_subscribe_channels,
+                channel_rotate_interval=self.config.websocket_channel_rotate_interval
             )
 
         logger.info("Using Discord browser-tabs polling listener mode")
@@ -266,6 +267,9 @@ def validate_config():
 
     if app_config.websocket_last_messages_interval < 0:
         logger.error("❌ WEBSOCKET_LAST_MESSAGES_INTERVAL 必须大于等于 0")
+        return False
+    if app_config.websocket_channel_rotate_interval < 0:
+        logger.error("❌ WEBSOCKET_CHANNEL_ROTATE_INTERVAL 必须大于等于 0")
         return False
 
     if app_config.async_send_enabled:

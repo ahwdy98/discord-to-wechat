@@ -132,3 +132,4 @@ DISCORD_LISTENER_MODE = "browser_tabs"
 WEBSOCKET_POLL_INTERVAL = 0.2
 WEBSOCKET_LAST_MESSAGES_INTERVAL = 2.0  # websocket 模式下请求各频道最后消息的兜底间隔；设为 0 可关闭
 WEBSOCKET_SUBSCRIBE_CHANNELS = False  # 实验性主动频道订阅；若出现 gatewaySockets=0/频繁重连，保持 False
+WEBSOCKET_CHANNEL_ROTATE_INTERVAL = 5.0  # websocket 模式单页面轮转频道间隔；设为 0 可固定在首个频道

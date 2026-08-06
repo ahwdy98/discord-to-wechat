@@ -34,12 +34,14 @@ class DiscordWebsocketListener:
         chrome_mute_audio: bool = True,
         last_messages_interval: float = 2.0,
         subscribe_channels: bool = False,
+        channel_rotate_interval: float = 0.0,
     ):
         self.channel_urls = channel_urls if isinstance(channel_urls, list) else [channel_urls]
         self.on_new_message = on_new_message
         self.check_interval = max(0.05, float(check_interval or 0.2))
         self.last_messages_interval = max(0.0, float(last_messages_interval or 0.0))
         self.subscribe_channels = bool(subscribe_channels)
+        self.channel_rotate_interval = max(0.0, float(channel_rotate_interval or 0.0))
         self.channel_by_id = self._build_channel_map(self.channel_urls)
         self.guild_channels = self._build_guild_channel_map(self.channel_urls)
         self.seen_message_ids = set()
@@ -59,6 +61,8 @@ class DiscordWebsocketListener:
         self.last_message_ids_by_channel: Dict[str, str] = {}
         self.last_messages_seen = 0
         self.last_messages_matched = 0
+        self.last_channel_rotate_at = 0.0
+        self.current_channel_index = 0
 
         self.browser_manager = BrowserManager(
             headless_mode=headless_mode,
@@ -93,6 +97,8 @@ class DiscordWebsocketListener:
 
     def navigate_to_channel(self, channel_url: Optional[str] = None):
         target_url = channel_url or (self.channel_urls[0] if self.channel_urls else "https://discord.com/channels/@me")
+        if target_url in self.channel_urls:
+            self.current_channel_index = self.channel_urls.index(target_url)
         logger.info(f"WebSocket mode opens one Discord page only: {target_url}")
         self.driver.get(target_url)
         time.sleep(5)
@@ -114,6 +120,10 @@ class DiscordWebsocketListener:
             "WebSocket active channel subscription: "
             f"{'enabled' if self.subscribe_channels else 'disabled'}"
         )
+        logger.info(
+            "WebSocket single-page channel rotation: "
+            f"{self.channel_rotate_interval}s"
+        )
         if self.guild_channels:
             logger.info(
                 "Configured Discord guild subscriptions: "
@@ -131,7 +141,6 @@ class DiscordWebsocketListener:
                     if not message:
                         continue
 
-                    self._remember_message(message.id)
                     logger.info("")
                     logger.info("WebSocket new message:")
                     logger.info(f"   User: {message.username}")
@@ -143,6 +152,7 @@ class DiscordWebsocketListener:
                 self._log_periodic_stats()
                 self._subscribe_configured_channels()
                 self._request_last_messages()
+                self._rotate_channel_if_needed()
             except Exception as e:
                 logger.error(f"WebSocket listener error: {e}", exc_info=True)
                 time.sleep(3)
@@ -178,6 +188,8 @@ class DiscordWebsocketListener:
             for gateway_event in self._extract_gateway_events(payload):
                 self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
+                    events.append(gateway_event)
+                elif gateway_event.get("t") == "MESSAGE_UPDATE":
                     events.append(gateway_event)
                 elif gateway_event.get("t") == "LAST_MESSAGES":
                     events.extend(self._message_events_from_last_messages(gateway_event))
@@ -571,6 +583,8 @@ class DiscordWebsocketListener:
                 self._record_gateway_event(gateway_event)
                 if gateway_event.get("t") == "MESSAGE_CREATE":
                     events.append(gateway_event)
+                elif gateway_event.get("t") == "MESSAGE_UPDATE":
+                    events.append(gateway_event)
                 elif gateway_event.get("t") == "LAST_MESSAGES":
                     events.extend(self._message_events_from_last_messages(gateway_event))
 
@@ -706,7 +720,8 @@ class DiscordWebsocketListener:
         self.message_create_matched += 1
 
         message_id = str(data.get("id") or "")
-        if not message_id or message_id in self.seen_message_ids:
+        seen_key = self._message_seen_key(event)
+        if not message_id or not seen_key or seen_key in self.seen_message_ids:
             return None
 
         author = data.get("author") or {}
@@ -717,11 +732,12 @@ class DiscordWebsocketListener:
             or author.get("username")
             or "Unknown user"
         )
-        content = str(data.get("content") or "").strip()
+        content = self._extract_content(data)
         attachments = self._extract_attachments(data)
         if not content:
             content = f"[Attachment count: {len(attachments)}]" if attachments else "[No text content]"
 
+        self._remember_message(seen_key)
         return DiscordMessage(
             id=message_id,
             content=content,
@@ -733,6 +749,63 @@ class DiscordWebsocketListener:
         )
 
     @staticmethod
+    def _message_seen_key(event: Dict) -> str:
+        data = event.get("d") or {}
+        message_id = str(data.get("id") or "")
+        if not message_id:
+            return ""
+
+        event_type = event.get("t")
+        if event_type == "MESSAGE_UPDATE":
+            edited_at = str(data.get("edited_timestamp") or data.get("timestamp") or "")
+            content_marker = json.dumps(
+                {
+                    "content": data.get("content"),
+                    "embeds": data.get("embeds"),
+                    "attachments": data.get("attachments"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            return f"{message_id}:update:{edited_at}:{hash(content_marker)}"
+
+        return message_id
+
+    @staticmethod
+    def _extract_content(data: Dict) -> str:
+        parts = []
+        content = str(data.get("content") or "").strip()
+        if content:
+            parts.append(content)
+
+        for embed in data.get("embeds") or []:
+            if not isinstance(embed, dict):
+                continue
+            for key in ("title", "description"):
+                value = str(embed.get(key) or "").strip()
+                if value:
+                    parts.append(value)
+
+            for field in embed.get("fields") or []:
+                if not isinstance(field, dict):
+                    continue
+                name = str(field.get("name") or "").strip()
+                value = str(field.get("value") or "").strip()
+                if name and value:
+                    parts.append(f"{name}: {value}")
+                elif value:
+                    parts.append(value)
+
+            footer = embed.get("footer") or {}
+            if isinstance(footer, dict):
+                footer_text = str(footer.get("text") or "").strip()
+                if footer_text:
+                    parts.append(footer_text)
+
+        return "\n\n".join(dict.fromkeys(parts))
+
+    @staticmethod
     def _extract_attachments(data: Dict) -> List[str]:
         urls = []
         for attachment in data.get("attachments") or []:
@@ -741,6 +814,16 @@ class DiscordWebsocketListener:
             url = attachment.get("url") or attachment.get("proxy_url")
             if url:
                 urls.append(url)
+        for embed in data.get("embeds") or []:
+            if not isinstance(embed, dict):
+                continue
+            for key in ("image", "thumbnail", "video"):
+                media = embed.get(key) or {}
+                if not isinstance(media, dict):
+                    continue
+                url = media.get("url") or media.get("proxy_url")
+                if url:
+                    urls.append(url)
         return urls
 
     @staticmethod
@@ -876,6 +959,30 @@ class DiscordWebsocketListener:
             f"{'sent' if sent else 'queued'} for "
             f"{sum(len(item['channel_ids']) for item in payload)} channels across {len(payload)} guilds"
         )
+
+    def _rotate_channel_if_needed(self):
+        if self.channel_rotate_interval <= 0 or len(self.channel_urls) <= 1 or not self.driver:
+            return
+
+        now = time.time()
+        if now - self.last_channel_rotate_at < self.channel_rotate_interval:
+            return
+
+        self.last_channel_rotate_at = now
+        self.current_channel_index = (self.current_channel_index + 1) % len(self.channel_urls)
+        channel_url = self.channel_urls[self.current_channel_index]
+        try:
+            logger.info(
+                "WebSocket rotating single page to channel "
+                f"[{self.current_channel_index + 1}/{len(self.channel_urls)}]: {channel_url}"
+            )
+            self.driver.get(channel_url)
+            time.sleep(1.5)
+            self._ensure_websocket_hook_active(channel_url)
+            self._request_last_messages(force=True)
+            self._drain_performance_logs()
+        except Exception as e:
+            logger.warning(f"Failed to rotate WebSocket listener page: {e}")
 
     @staticmethod
     def _get_channel_name(channel_url: str) -> str:
