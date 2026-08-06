@@ -27,7 +27,10 @@ class DiscordListener:
         channel_urls: List[str],
         on_new_message: Callable[[DiscordMessage], None],
         check_interval: int = 3,
-        headless_mode: bool = False
+        headless_mode: bool = False,
+        chrome_load_images: bool = True,
+        chrome_disable_notifications: bool = True,
+        chrome_mute_audio: bool = True
     ):
         """
         初始化Discord监听器
@@ -35,13 +38,21 @@ class DiscordListener:
         :param on_new_message: 新消息回调函数，参数为 (message: DiscordMessage)
         :param check_interval: 检查间隔（秒）
         :param headless_mode: 是否使用无头模式
+        :param chrome_load_images: 是否加载图片资源
+        :param chrome_disable_notifications: 是否禁用浏览器通知
+        :param chrome_mute_audio: 是否静音
         """
         self.channel_urls = channel_urls if isinstance(channel_urls, list) else [channel_urls]
         self.on_new_message = on_new_message
         self.check_interval = check_interval
         
         # 浏览器管理器
-        self.browser_manager = BrowserManager(headless_mode)
+        self.browser_manager = BrowserManager(
+            headless_mode=headless_mode,
+            load_images=chrome_load_images,
+            disable_notifications=chrome_disable_notifications,
+            mute_audio=chrome_mute_audio
+        )
         self.driver = None
         
         # 为每个频道维护独立的最后消息ID

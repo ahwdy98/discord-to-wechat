@@ -18,8 +18,14 @@ class Config:
         self.feishu_webhook_list: List[Dict[str, str]] = []
         self.webhook_server_url: str = ""
         self.webhook_server_token: str = ""
+        self.async_send_enabled: bool = False
+        self.send_workers: int = 1
+        self.send_queue_size: int = 1000
         self.check_interval: int = 3
         self.headless_mode: bool = False
+        self.chrome_load_images: bool = True
+        self.chrome_disable_notifications: bool = True
+        self.chrome_mute_audio: bool = True
         
         self.load_config()
 
@@ -46,8 +52,14 @@ class Config:
                 self.feishu_webhook_list = getattr(config_module, 'FEISHU_WEBHOOK_LIST', [])
                 self.webhook_server_url = getattr(config_module, 'WEBHOOK_SERVER_URL', '')
                 self.webhook_server_token = getattr(config_module, 'WEBHOOK_SERVER_TOKEN', '')
+                self.async_send_enabled = getattr(config_module, 'ASYNC_SEND_ENABLED', False)
+                self.send_workers = getattr(config_module, 'SEND_WORKERS', 1)
+                self.send_queue_size = getattr(config_module, 'SEND_QUEUE_SIZE', 1000)
                 self.check_interval = getattr(config_module, 'CHECK_INTERVAL', 3)
                 self.headless_mode = getattr(config_module, 'HEADLESS_MODE', False)
+                self.chrome_load_images = getattr(config_module, 'CHROME_LOAD_IMAGES', True)
+                self.chrome_disable_notifications = getattr(config_module, 'CHROME_DISABLE_NOTIFICATIONS', True)
+                self.chrome_mute_audio = getattr(config_module, 'CHROME_MUTE_AUDIO', True)
         except Exception as e:
             print(f"加载配置文件失败: {e}")
             # 可以抛出异常或者使用默认值

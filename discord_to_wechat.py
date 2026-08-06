@@ -24,6 +24,7 @@ from src.services.sender.working_wechat import WorkingWechatSender
 from src.services.sender.feishu import FeishuSender
 from src.services.sender.webhook_server import WebhookServerSender
 from src.services.sender.router import ChannelRoutingSender
+from src.services.sender.async_sender import AsyncMessageSender
 
 # 初始化日志
 logger = setup_logger()
@@ -47,7 +48,10 @@ class DiscordToWechatBridge:
             channel_urls=self.config.discord_channel_urls,
             on_new_message=self._on_new_message,
             check_interval=self.config.check_interval,
-            headless_mode=self.config.headless_mode
+            headless_mode=self.config.headless_mode,
+            chrome_load_images=self.config.chrome_load_images,
+            chrome_disable_notifications=self.config.chrome_disable_notifications,
+            chrome_mute_audio=self.config.chrome_mute_audio
         )
     
     def _create_sender(self) -> MessageSender:
@@ -56,13 +60,25 @@ class DiscordToWechatBridge:
 
         if self.config.sender_routes:
             logger.info(f"🔀 已启用频道发送路由: {len(self.config.sender_routes)} 条")
-            return ChannelRoutingSender(
+            sender = ChannelRoutingSender(
                 default_sender=default_sender,
                 routes=self.config.sender_routes,
                 sender_factory=self._create_sender_by_type
             )
+            return self._wrap_sender(sender)
 
-        return default_sender
+        return self._wrap_sender(default_sender)
+
+    def _wrap_sender(self, sender: MessageSender) -> MessageSender:
+        """根据配置包装发送器，例如启用异步发送队列。"""
+        if not self.config.async_send_enabled:
+            return sender
+
+        return AsyncMessageSender(
+            sender=sender,
+            workers=self.config.send_workers,
+            queue_size=self.config.send_queue_size
+        )
 
     def _create_sender_by_type(self, sender_type: str, overrides: Dict) -> MessageSender:
         """按类型创建消息发送器，可用 overrides 覆盖默认配置"""
@@ -219,6 +235,14 @@ def validate_config():
         logger.error(f"❌ SENDER_TYPE 配置错误: {app_config.sender_type}")
         return False
 
+    if app_config.async_send_enabled:
+        if app_config.send_workers < 1:
+            logger.error("❌ SEND_WORKERS 必须大于等于 1")
+            return False
+        if app_config.send_queue_size < 1:
+            logger.error("❌ SEND_QUEUE_SIZE 必须大于等于 1")
+            return False
+
     for index, route in enumerate(app_config.sender_routes or [], 1):
         route_sender_type = route.get("sender_type") or route.get("type")
         route_channels = route.get("channels") or ([route.get("channel")] if route.get("channel") else [])
@@ -300,6 +324,10 @@ def print_startup_info():
     logger.info(f"\n⚙️  运行配置:")
     logger.info(f"   检查间隔: {app_config.check_interval} 秒")
     logger.info(f"   无头模式: {'是' if app_config.headless_mode else '否'}")
+    logger.info(f"   加载图片: {'是' if app_config.chrome_load_images else '否'}")
+    logger.info(f"   异步发送: {'是' if app_config.async_send_enabled else '否'}")
+    if app_config.async_send_enabled:
+        logger.info(f"   发送Worker: {app_config.send_workers}, 队列大小: {app_config.send_queue_size}")
     logger.info("=" * 60 + "\n")
 
 

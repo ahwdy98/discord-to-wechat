@@ -111,5 +111,15 @@ WEBHOOK_SERVER_TOKEN = ""  # 如果 webhook_server 设置了 WEBHOOK_TOKEN，这
 # 监控间隔（秒）
 CHECK_INTERVAL = 30
 
+# 发送配置
+# 开启后，监听线程只负责入队，后台 worker 负责实际发送，避免机器人/Webhook 请求阻塞频道轮询。
+# 微信个人号建议 SEND_WORKERS = 1；HTTP类发送器可以按需增大。
+ASYNC_SEND_ENABLED = False
+SEND_WORKERS = 1
+SEND_QUEUE_SIZE = 1000
+
 # Chrome配置
 HEADLESS_MODE = False  # 设为True则无头模式（不显示浏览器窗口）
+CHROME_LOAD_IMAGES = True  # 设为False可减少图片加载带来的资源占用；图片附件链接通常仍可提取
+CHROME_DISABLE_NOTIFICATIONS = True
+CHROME_MUTE_AUDIO = True

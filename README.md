@@ -79,6 +79,25 @@ SENDER_ROUTES = [
 ]
 ```
 
+资源优化配置：
+
+```python
+# 已登录成功后可以开启无头模式，减少图形渲染开销
+HEADLESS_MODE = True
+
+# 禁用图片加载能减少 Discord 页面资源占用；图片附件链接通常仍可提取
+CHROME_LOAD_IMAGES = False
+CHROME_DISABLE_NOTIFICATIONS = True
+CHROME_MUTE_AUDIO = True
+
+# 发送异步化，避免飞书/企业微信/webhook 请求阻塞频道轮询
+ASYNC_SEND_ENABLED = True
+SEND_WORKERS = 1
+SEND_QUEUE_SIZE = 1000
+```
+
+说明：`SEND_WORKERS` 对微信个人号建议保持 `1`；企业微信、飞书、自建 webhook 这类 HTTP 发送器可以按需调大。
+
 ### 2. 启动方式（3种）
 
 #### 方式一：本地启动（Python 直接运行）

@@ -13,8 +13,17 @@ logger = logging.getLogger(__name__)
 class BrowserManager:
     """浏览器管理器：负责 Chrome 的初始化、启动和关闭"""
 
-    def __init__(self, headless_mode: bool = False):
+    def __init__(
+        self,
+        headless_mode: bool = False,
+        load_images: bool = True,
+        disable_notifications: bool = True,
+        mute_audio: bool = True
+    ):
         self.headless_mode = headless_mode
+        self.load_images = load_images
+        self.disable_notifications = disable_notifications
+        self.mute_audio = mute_audio
         self.driver: Optional[webdriver.Chrome] = None
 
     def init_chrome(self) -> webdriver.Chrome:
@@ -100,6 +109,22 @@ class BrowserManager:
         options.add_argument('--no-zygote')
         options.add_argument('--disable-features=VizDisplayCompositor,UseOzonePlatform')
         options.add_argument('--remote-debugging-port=9222')
+
+        if self.disable_notifications:
+            options.add_argument('--disable-notifications')
+        if self.mute_audio:
+            options.add_argument('--mute-audio')
+        if not self.load_images:
+            options.add_argument('--blink-settings=imagesEnabled=false')
+            logger.info("   Chrome 已禁用图片加载以降低资源占用")
+
+        prefs = {}
+        if not self.load_images:
+            prefs["profile.managed_default_content_settings.images"] = 2
+        if self.disable_notifications:
+            prefs["profile.default_content_setting_values.notifications"] = 2
+        if prefs:
+            options.add_experimental_option("prefs", prefs)
 
     def _init_system_chromedriver(self, options: Options) -> webdriver.Chrome:
         try:
