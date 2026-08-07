@@ -112,6 +112,7 @@ class DiscordListener:
         self.channel_handles = {}
         self._last_switch_error = None
         self.init_chrome()
+        self.browser_manager.driver = self.driver
         self.login_discord()
         logger.info("✅ 浏览器重启完成")
 
@@ -128,6 +129,13 @@ class DiscordListener:
                 "no such session",
                 "session timed out due to inactivity",
                 "session was removed",
+                "tab crashed",
+                "chrome not reachable",
+                "chrome unreachable",
+                "disconnected: not connected to devtools",
+                "target crashed",
+                "target closed",
+                "web view not found",
             )
         )
 
