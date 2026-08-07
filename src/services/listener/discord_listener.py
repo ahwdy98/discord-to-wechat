@@ -731,27 +731,40 @@ class DiscordListener:
                 }
 
                 function keepAtLatest() {
-                  const labels = ["Jump to Present", "跳至最新", "跳到最新", "转到最新"];
+                  const labels = [
+                    "jump to present",
+                    "jump to current",
+                    "jump to latest",
+                    "new messages",
+                    "跳至最新",
+                    "跳到最新",
+                    "跳转至当前",
+                    "转到最新",
+                    "最新消息",
+                    "未读消息"
+                  ];
+                  let moved = false;
                   for (const button of document.querySelectorAll('button,[role="button"]')) {
                     const text = [
                       button.getAttribute("aria-label"),
                       button.getAttribute("title"),
                       button.innerText,
                       button.textContent
-                    ].join(" ");
-                    if (labels.some(label => text && text.includes(label))) {
+                    ].join(" ").toLowerCase();
+                    if (labels.some(label => text && text.includes(label.toLowerCase()))) {
                       button.click();
+                      moved = true;
                     }
                   }
 
                   const scroller = findMessageScroller();
-                  if (!scroller) return false;
+                  if (!scroller) return moved;
                   const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
                   if (distance > 240) {
                     scroller.scrollTop = scroller.scrollHeight;
                     return true;
                   }
-                  return false;
+                  return moved;
                 }
 
                 const scrolledBeforeCollect = keepAtLatest();
