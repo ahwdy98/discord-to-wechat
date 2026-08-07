@@ -152,12 +152,24 @@ class DiscordListener:
         actual_channel_id = self._channel_id_from_url(current_url)
         return bool(expected_channel_id and actual_channel_id == expected_channel_id)
 
+    def _current_page_url(self) -> str:
+        try:
+            page_url = self.driver.execute_script("return window.location.href || document.URL || '';")
+            if page_url:
+                return str(page_url)
+        except Exception:
+            pass
+        try:
+            return self.driver.current_url or ""
+        except Exception:
+            return ""
+
     def _wait_for_channel_url(self, channel_url: str, timeout: float = 8.0, stable_seconds: float = 1.2) -> bool:
         deadline = time.monotonic() + max(0.5, timeout)
         matched_since = None
         while time.monotonic() < deadline:
             try:
-                if self._current_url_matches_channel(self.driver.current_url or "", channel_url):
+                if self._current_url_matches_channel(self._current_page_url(), channel_url):
                     if matched_since is None:
                         matched_since = time.monotonic()
                     if time.monotonic() - matched_since >= stable_seconds:
@@ -182,7 +194,7 @@ class DiscordListener:
                 continue
             try:
                 self.driver.switch_to.window(handle)
-                if self._current_url_matches_channel(self.driver.current_url or "", channel_url):
+                if self._current_url_matches_channel(self._current_page_url(), channel_url):
                     return handle
             except Exception:
                 continue
@@ -198,7 +210,7 @@ class DiscordListener:
         if not self._wait_for_channel_url(channel_url):
             logger.warning(
                 "频道标签页导航后仍未落到目标频道: "
-                f"expected={channel_url}, current={self.driver.current_url}"
+                f"expected={channel_url}, current={self._current_page_url()}"
             )
             return False
         self._install_dom_observer(channel_url)
@@ -236,7 +248,7 @@ class DiscordListener:
         for handle in handles:
             try:
                 self.driver.switch_to.window(handle)
-                current_url = self.driver.current_url or ""
+                current_url = self._current_page_url()
                 snapshots.append({
                     "handle": handle,
                     "url": current_url,
@@ -349,7 +361,7 @@ class DiscordListener:
                     self.driver.switch_to.window(handle)
                     time.sleep(0.1)
 
-                current_url = self.driver.current_url or ""
+                current_url = self._current_page_url()
                 if not self._current_url_matches_channel(current_url, channel_url):
                     logger.warning(
                         "频道标签页 URL 已偏离，重新导航: "
@@ -749,6 +761,7 @@ class DiscordListener:
                   ? window.__discordDomBridgeCollectVisibleMessages(50)
                   : [];
                 return {
+                  pageUrl: window.location.href || document.URL || "",
                   messages: queue.concat(visibleMessages),
                   channelName: channelName(),
                   scrolled: scrolledBeforeCollect || keepAtLatest(),
@@ -768,6 +781,14 @@ class DiscordListener:
             return []
 
         if isinstance(result, dict):
+            page_url = str(result.get("pageUrl") or "").strip()
+            if page_url and not self._current_url_matches_channel(page_url, channel_url):
+                logger.warning(
+                    "Discord DOM page URL does not match target channel, forcing channel remap: "
+                    f"expected={channel_url}, actual={page_url}"
+                )
+                self.channel_handles.pop(channel_url, None)
+                return []
             raw_messages = result.get("messages") or []
             channel_name = str(result.get("channelName") or "").strip()
         else:
