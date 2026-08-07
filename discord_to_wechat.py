@@ -98,7 +98,8 @@ class DiscordToWechatBridge:
         return AsyncMessageSender(
             sender=sender,
             workers=self.config.send_workers,
-            queue_size=self.config.send_queue_size
+            queue_size=self.config.send_queue_size,
+            confirm_timeout=self.config.async_send_confirm_timeout
         )
 
     def _create_sender_by_type(self, sender_type: str, overrides: Dict) -> MessageSender:

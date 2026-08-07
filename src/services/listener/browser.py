@@ -135,6 +135,9 @@ class BrowserManager:
         options.add_argument('--disable-prompt-on-repost')
         options.add_argument('--disable-sync')
         options.add_argument('--disable-translate')
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-renderer-backgrounding')
         options.add_argument('--metrics-recording-only')
         options.add_argument('--process-per-site')
         options.add_argument(

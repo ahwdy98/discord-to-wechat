@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-异步消息发送器包装器。
+Async message sender wrapper.
 
-监听线程只负责把消息放入队列，后台 worker 负责实际发送，避免 HTTP/机器人
-发送耗时阻塞 Discord 频道轮询。
+The listener can enqueue messages quickly while worker threads do the actual
+delivery. By default send_message waits for the worker result, so callers can
+mark a Discord message as processed only after real delivery succeeds.
 """
 
 import queue
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from .base import MessageSender
 from src.core.models import DiscordMessage
@@ -20,14 +21,21 @@ logger = get_logger(__name__)
 
 
 class AsyncMessageSender(MessageSender):
-    """用后台线程异步执行真实发送器"""
+    """Run the real sender in background worker threads."""
 
-    def __init__(self, sender: MessageSender, workers: int = 1, queue_size: int = 1000):
+    def __init__(
+        self,
+        sender: MessageSender,
+        workers: int = 1,
+        queue_size: int = 1000,
+        confirm_timeout: float = 30.0,
+    ):
         super().__init__()
         self.sender = sender
         self.workers = max(1, int(workers or 1))
         self.queue_size = max(1, int(queue_size or 1000))
-        self.queue: "queue.Queue[Optional[DiscordMessage]]" = queue.Queue(maxsize=self.queue_size)
+        self.confirm_timeout = max(0.0, float(confirm_timeout or 0.0))
+        self.queue: "queue.Queue[Optional[Any]]" = queue.Queue(maxsize=self.queue_size)
         self.threads = []
         self.started = False
 
@@ -37,19 +45,32 @@ class AsyncMessageSender(MessageSender):
 
         self._start_workers()
         self.is_ready = True
-        logger.info(f"异步发送队列已启用: workers={self.workers}, queue_size={self.queue_size}")
+        logger.info(
+            "Async sender queue enabled: "
+            f"workers={self.workers}, queue_size={self.queue_size}, "
+            f"confirm_timeout={self.confirm_timeout}s"
+        )
         return True
 
     def send_message(self, message: DiscordMessage) -> bool:
         if not self.is_ready:
-            logger.warning("异步发送器未就绪，跳过发送")
+            logger.warning("Async sender is not ready, skipping message")
             return False
 
         try:
-            self.queue.put_nowait(message)
-            return True
+            if self.confirm_timeout <= 0:
+                self.queue.put_nowait(message)
+                return True
+
+            ack = threading.Event()
+            result = {"ok": False}
+            self.queue.put_nowait((message, ack, result))
+            if not ack.wait(self.confirm_timeout):
+                logger.error(f"Async sender delivery confirmation timed out: message_id={message.id}")
+                return False
+            return bool(result.get("ok"))
         except queue.Full:
-            logger.error("异步发送队列已满，丢弃消息")
+            logger.error("Async sender queue is full, dropping message")
             return False
 
     def keep_alive(self):
@@ -85,27 +106,42 @@ class AsyncMessageSender(MessageSender):
 
     def _worker_loop(self):
         while True:
-            message = self.queue.get()
+            item = self.queue.get()
+            ack = None
+            result = None
             try:
-                if message is None:
+                if item is None:
                     return
 
+                if isinstance(item, tuple) and len(item) == 3:
+                    message, ack, result = item
+                else:
+                    message = item
+
+                sent = False
                 max_attempts = 3
                 for attempt in range(1, max_attempts + 1):
                     try:
                         if self.sender.send_message(message):
+                            sent = True
                             break
                     except Exception as e:
-                        logger.error(f"寮傛鍙戦€佹秷鎭紓甯? {e}", exc_info=True)
+                        logger.error(f"Async sender worker error: {e}", exc_info=True)
 
                     if attempt < max_attempts:
                         time.sleep(min(5, attempt))
-                    else:
-                        logger.error(
-                            "寮傛鍙戦€佹秷鎭け璐ワ紝宸茶揪鏈€澶ч噸璇曟鏁? "
-                            f"message_id={getattr(message, 'id', '')}"
-                        )
+
+                if not sent:
+                    logger.error(
+                        "Async sender failed after retries: "
+                        f"message_id={getattr(message, 'id', '')}"
+                    )
+
+                if result is not None:
+                    result["ok"] = sent
             except Exception as e:
-                logger.error(f"异步发送消息异常: {e}", exc_info=True)
+                logger.error(f"Async sender worker loop error: {e}", exc_info=True)
             finally:
+                if ack is not None:
+                    ack.set()
                 self.queue.task_done()

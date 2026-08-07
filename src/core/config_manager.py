@@ -27,6 +27,7 @@ class Config:
         self.async_send_enabled: bool = False
         self.send_workers: int = 1
         self.send_queue_size: int = 1000
+        self.async_send_confirm_timeout: float = 30.0
         self.discord_listener_mode: str = "browser_tabs"
         self.websocket_poll_interval: float = 0.2
         self.websocket_last_messages_interval: float = 2.0
@@ -71,6 +72,7 @@ class Config:
                 self.async_send_enabled = getattr(config_module, 'ASYNC_SEND_ENABLED', False)
                 self.send_workers = getattr(config_module, 'SEND_WORKERS', 1)
                 self.send_queue_size = getattr(config_module, 'SEND_QUEUE_SIZE', 1000)
+                self.async_send_confirm_timeout = _as_float(getattr(config_module, 'ASYNC_SEND_CONFIRM_TIMEOUT', 30.0), 30.0)
                 self.discord_listener_mode = str(getattr(config_module, 'DISCORD_LISTENER_MODE', 'browser_tabs')).strip().lower()
                 self.websocket_poll_interval = _as_float(getattr(config_module, 'WEBSOCKET_POLL_INTERVAL', 0.2), 0.2)
                 self.websocket_last_messages_interval = _as_float(getattr(config_module, 'WEBSOCKET_LAST_MESSAGES_INTERVAL', 2.0), 2.0)
