@@ -602,11 +602,29 @@ class DiscordListener:
     if (message) window.__discordDomBridgeSeen[message.id] = signature(message);
   }
 
-  window.__discordDomBridgeCollectVisibleMessages = function (limit) {
+  window.__discordDomBridgeCollectVisibleMessages = function (limit, lookbackMs) {
     const roots = Array.from(document.querySelectorAll('li[id^="chat-messages-"]'));
-    return roots.slice(-Math.max(1, limit || 50))
-      .map(function (root) { return parseMessage(root, "recovery"); })
-      .filter(Boolean);
+    const maxCount = Math.max(1, limit || 10);
+    const cutoff = lookbackMs && lookbackMs > 0 ? Date.now() - lookbackMs : 0;
+    const selected = [];
+
+    for (let index = roots.length - 1; index >= 0 && selected.length < maxCount; index -= 1) {
+      const message = parseMessage(roots[index], "recovery");
+      if (!message) continue;
+
+      const messageTime = Date.parse(message.timestamp || "");
+      if (cutoff && Number.isFinite(messageTime) && messageTime < cutoff) {
+        break;
+      }
+      selected.push(message);
+    }
+
+    if (!selected.length && roots.length) {
+      const latest = parseMessage(roots[roots.length - 1], "recoveryFallback");
+      if (latest) selected.push(latest);
+    }
+
+    return selected.reverse();
   };
 
   function enqueue(root, eventKind) {
@@ -694,6 +712,8 @@ class DiscordListener:
         try:
             result = self.driver.execute_script(
                 """
+                const recoveryLimit = Math.max(1, Number(arguments[0] || 10));
+                const recoveryLookbackMs = Math.max(0, Number(arguments[1] || 0));
                 if (!window.__discordDomBridgeInstalled) return null;
 
                 function clean(value) {
@@ -779,7 +799,7 @@ class DiscordListener:
                 const queue = window.__discordDomBridgeQueue || [];
                 window.__discordDomBridgeQueue = [];
                 const visibleMessages = window.__discordDomBridgeCollectVisibleMessages
-                  ? window.__discordDomBridgeCollectVisibleMessages(50)
+                  ? window.__discordDomBridgeCollectVisibleMessages(recoveryLimit, recoveryLookbackMs)
                   : [];
                 return {
                   pageUrl: window.location.href || document.URL || "",
@@ -788,7 +808,9 @@ class DiscordListener:
                   scrolled: scrolledBeforeCollect || keepAtLatest(),
                   bridgeStats: window.__discordDomBridgeStats || null
                 };
-                """
+                """,
+                self._dom_recovery_max_messages(),
+                self._dom_recovery_lookback_seconds() * 1000,
             )
         except Exception as e:
             if self._is_browser_session_lost(e):
@@ -888,8 +910,13 @@ class DiscordListener:
             except ValueError:
                 pass
 
-        if self.dom_forward_after_utc and timestamp_raw and timestamp < self.dom_forward_after_utc:
-            event_kind = str(raw.get("eventKind") or "added")
+        event_kind = str(raw.get("eventKind") or "added")
+        if (
+            self.dom_forward_after_utc
+            and timestamp_raw
+            and timestamp < self.dom_forward_after_utc
+            and event_kind not in ("recovery", "recoveryFallback")
+        ):
             in_quarantine = time.monotonic() < self.dom_startup_quarantine_until
             if event_kind != "updated" or in_quarantine:
                 self.dom_ignored_old_message_ids.add(message_id)
@@ -974,9 +1001,16 @@ class DiscordListener:
     @staticmethod
     def _dom_recovery_lookback_seconds() -> float:
         try:
-            return max(0.0, float(os.getenv("DISCORD_DOM_RECOVERY_LOOKBACK_SECONDS", "7200")))
+            return max(0.0, float(os.getenv("DISCORD_DOM_RECOVERY_LOOKBACK_SECONDS", "86400")))
         except ValueError:
-            return 7200.0
+            return 86400.0
+
+    @staticmethod
+    def _dom_recovery_max_messages() -> int:
+        try:
+            return max(1, int(os.getenv("DISCORD_DOM_RECOVERY_MAX_MESSAGES", "10")))
+        except ValueError:
+            return 10
 
     def monitor_messages(self):
         logger.info("Using Discord DOM event observer queues for browser-tabs mode")

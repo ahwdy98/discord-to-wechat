@@ -125,6 +125,12 @@ CHROME_LOAD_IMAGES = True  # 设为False可减少图片加载带来的资源占�
 CHROME_DISABLE_NOTIFICATIONS = True
 CHROME_MUTE_AUDIO = True
 
+# browser_tabs 模式启动/重建时的可见消息恢复策略：
+# 从最新消息往前最多恢复 10 条；遇到超过 24 小时的消息停止；
+# 如果 24 小时内没有任何消息，则保底恢复最新 1 条，方便新频道出现在 Webhook 页面。
+DISCORD_DOM_RECOVERY_MAX_MESSAGES = 10
+DISCORD_DOM_RECOVERY_LOOKBACK_SECONDS = 86400
+
 # Discord listener mode:
 # - "browser_tabs": old stable mode, opens one Discord tab per channel.
 # - "websocket": low-resource realtime mode, opens one Discord page and listens to Gateway frames.
