@@ -29,7 +29,8 @@ class DiscordListener:
         headless_mode: bool = False,
         chrome_load_images: bool = True,
         chrome_disable_notifications: bool = True,
-        chrome_mute_audio: bool = True
+        chrome_mute_audio: bool = True,
+        browser_recycle_interval: float = 21600.0
     ):
         """
         初始化Discord监听器
@@ -44,6 +45,7 @@ class DiscordListener:
         self.channel_urls = channel_urls if isinstance(channel_urls, list) else [channel_urls]
         self.on_new_message = on_new_message
         self.check_interval = check_interval
+        self.browser_recycle_interval = max(0.0, float(browser_recycle_interval or 0))
         
         # 浏览器管理器
         self.browser_manager = BrowserManager(
@@ -65,10 +67,12 @@ class DiscordListener:
         self.channel_handles = {}
         self._last_tab_reconcile_at = 0.0
         self._last_switch_error = None
+        self._browser_started_at = 0.0
     
     def init_chrome(self):
         """初始化Chrome浏览器"""
         self.driver = self.browser_manager.init_chrome()
+        self._browser_started_at = time.monotonic()
     
     def login_discord(self):
         """登录Discord（首次需要手动登录）"""
@@ -103,11 +107,8 @@ class DiscordListener:
     def restart_browser(self):
         """重启浏览器并重新登录"""
         logger.info("♻️ 正在重启浏览器...")
-        try:
-            if self.driver:
-                self.driver.quit()
-        except Exception:
-            pass
+        self.browser_manager.cleanup()
+        self.driver = None
             
         self.channel_handles = {}
         self._last_switch_error = None
@@ -115,6 +116,21 @@ class DiscordListener:
         self.browser_manager.driver = self.driver
         self.login_discord()
         logger.info("✅ 浏览器重启完成")
+
+    def _browser_recycle_due(self) -> bool:
+        if self.browser_recycle_interval <= 0 or self._browser_started_at <= 0:
+            return False
+        return time.monotonic() - self._browser_started_at >= self.browser_recycle_interval
+
+    def _reset_dom_forward_cutoff(self) -> None:
+        grace_seconds = max(2, float(self.check_interval or 1) * 2)
+        recovery_seconds = max(grace_seconds, self._dom_recovery_lookback_seconds())
+        self.dom_forward_after_utc = datetime.now(timezone.utc) - timedelta(seconds=recovery_seconds)
+        self.dom_startup_quarantine_until = time.monotonic() + 60
+        logger.info(
+            "DOM event monitor will recover recent messages and ignore older added messages before "
+            f"{self.dom_forward_after_utc.isoformat()}"
+        )
 
     @staticmethod
     def _is_browser_session_lost(error) -> bool:
@@ -136,6 +152,9 @@ class DiscordListener:
                 "target crashed",
                 "target closed",
                 "web view not found",
+                "connection refused",
+                "failed to establish a new connection",
+                "max retries exceeded",
             )
         )
 
@@ -143,6 +162,7 @@ class DiscordListener:
         logger.error(f"检测到 Selenium 浏览器会话已失效，正在自动重建: {reason}")
         self.restart_browser()
         self.navigate_to_channel()
+        self._reset_dom_forward_cutoff()
         self._last_tab_reconcile_at = 0.0
         logger.info("✅ Selenium 浏览器会话已重建，继续监控")
 
@@ -936,16 +956,21 @@ class DiscordListener:
         channel_errors = {url: 0 for url in self.channel_urls}
         max_errors = 5
         if self.dom_forward_after_utc is None:
-            grace_seconds = max(2, float(self.check_interval or 1) * 2)
-            recovery_seconds = max(grace_seconds, self._dom_recovery_lookback_seconds())
-            self.dom_forward_after_utc = datetime.now(timezone.utc) - timedelta(seconds=recovery_seconds)
-            self.dom_startup_quarantine_until = time.monotonic() + 60
-            logger.info(
-                "DOM event monitor will recover recent messages and ignore older added messages before "
-                f"{self.dom_forward_after_utc.isoformat()}"
-            )
+            self._reset_dom_forward_cutoff()
 
         while True:
+            if self._browser_recycle_due():
+                elapsed = time.monotonic() - self._browser_started_at
+                logger.info(
+                    "Chrome browser recycle interval reached "
+                    f"({elapsed:.0f}s >= {self.browser_recycle_interval:.0f}s), rebuilding browser session"
+                )
+                self.restart_browser()
+                self.navigate_to_channel()
+                self._reset_dom_forward_cutoff()
+                channel_errors = {url: 0 for url in self.channel_urls}
+                continue
+
             try:
                 self._reconcile_channel_tabs()
             except Exception as e:

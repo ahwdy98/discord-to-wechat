@@ -125,6 +125,10 @@ CHROME_LOAD_IMAGES = True  # 设为False可减少图片加载带来的资源占�
 CHROME_DISABLE_NOTIFICATIONS = True
 CHROME_MUTE_AUDIO = True
 
+# Chrome/Discord 长时间运行可能持续涨内存；到期后主动重建浏览器，避免等到 OOM。
+# 设为 0 可关闭。12 个频道建议保持 4-6 小时范围；默认 6 小时。
+DISCORD_BROWSER_RECYCLE_INTERVAL_SECONDS = 21600
+
 # browser_tabs 模式启动/重建时的可见消息恢复策略：
 # 从最新消息往前最多恢复 10 条；遇到超过 24 小时的消息停止；
 # 如果 24 小时内没有任何消息，则保底恢复最新 1 条，方便新频道出现在 Webhook 页面。

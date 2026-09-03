@@ -61,7 +61,8 @@ class DiscordToWechatBridge:
                 chrome_mute_audio=self.config.chrome_mute_audio,
                 last_messages_interval=self.config.websocket_last_messages_interval,
                 subscribe_channels=self.config.websocket_subscribe_channels,
-                channel_rotate_interval=self.config.websocket_channel_rotate_interval
+                channel_rotate_interval=self.config.websocket_channel_rotate_interval,
+                browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds
             )
 
         logger.info("Using Discord browser-tabs polling listener mode")
@@ -72,7 +73,8 @@ class DiscordToWechatBridge:
             headless_mode=self.config.headless_mode,
             chrome_load_images=self.config.chrome_load_images,
             chrome_disable_notifications=self.config.chrome_disable_notifications,
-            chrome_mute_audio=self.config.chrome_mute_audio
+            chrome_mute_audio=self.config.chrome_mute_audio,
+            browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds
         )
     
     def _create_sender(self) -> MessageSender:
@@ -363,6 +365,10 @@ def print_startup_info():
     logger.info(f"   检查间隔: {app_config.check_interval} 秒")
     logger.info(f"   无头模式: {'是' if app_config.headless_mode else '否'}")
     logger.info(f"   加载图片: {'是' if app_config.chrome_load_images else '否'}")
+    if app_config.discord_browser_recycle_interval_seconds > 0:
+        logger.info(f"   浏览器主动回收: {app_config.discord_browser_recycle_interval_seconds:g} 秒")
+    else:
+        logger.info("   浏览器主动回收: 关闭")
     logger.info(f"   异步发送: {'是' if app_config.async_send_enabled else '否'}")
     if app_config.async_send_enabled:
         logger.info(f"   发送Worker: {app_config.send_workers}, 队列大小: {app_config.send_queue_size}")

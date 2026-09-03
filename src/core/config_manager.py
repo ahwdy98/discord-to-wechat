@@ -38,6 +38,7 @@ class Config:
         self.chrome_load_images: bool = True
         self.chrome_disable_notifications: bool = True
         self.chrome_mute_audio: bool = True
+        self.discord_browser_recycle_interval_seconds: float = 21600.0
         
         self.load_config()
 
@@ -83,6 +84,14 @@ class Config:
                 self.chrome_load_images = getattr(config_module, 'CHROME_LOAD_IMAGES', True)
                 self.chrome_disable_notifications = getattr(config_module, 'CHROME_DISABLE_NOTIFICATIONS', True)
                 self.chrome_mute_audio = getattr(config_module, 'CHROME_MUTE_AUDIO', True)
+                self.discord_browser_recycle_interval_seconds = _as_float(
+                    getattr(
+                        config_module,
+                        'DISCORD_BROWSER_RECYCLE_INTERVAL_SECONDS',
+                        os.getenv('DISCORD_BROWSER_RECYCLE_INTERVAL_SECONDS', 21600.0)
+                    ),
+                    21600.0
+                )
                 self._derive_discord_channels_from_routes()
         except Exception as e:
             print(f"加载配置文件失败: {e}")

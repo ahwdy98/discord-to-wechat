@@ -211,6 +211,8 @@ class BrowserManager:
             except Exception as e:
                 logger.debug(f"   关闭Chrome失败: {e}")
                 self._force_kill_chromedriver()
+            finally:
+                self.driver = None
 
     def _force_kill_chromedriver(self):
         # 尝试强制终止残留进程
