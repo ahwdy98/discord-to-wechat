@@ -129,6 +129,13 @@ CHROME_MUTE_AUDIO = True
 # 设为 0 可关闭。12 个频道建议保持 4-6 小时范围；默认 6 小时。
 DISCORD_BROWSER_RECYCLE_INTERVAL_SECONDS = 21600
 
+# 主机可用内存低于该值时提前重建 Chrome，避免 Linux OOM killer 先杀掉 renderer。
+# 设为 0 可关闭。内存检查很轻量，读取容器内可见的 /proc/meminfo。
+DISCORD_BROWSER_MIN_AVAILABLE_MEMORY_MB = 768
+DISCORD_BROWSER_MEMORY_CHECK_INTERVAL_SECONDS = 15
+# 防止刚启动、打开频道时的短时内存峰值造成连续重建。
+DISCORD_BROWSER_MEMORY_RECYCLE_MIN_AGE_SECONDS = 600
+
 # browser_tabs 模式启动/重建时的可见消息恢复策略：
 # 从最新消息往前最多恢复 10 条；遇到超过 24 小时的消息停止；
 # 如果 24 小时内没有任何消息，则保底恢复最新 1 条，方便新频道出现在 Webhook 页面。

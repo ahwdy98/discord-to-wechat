@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional
 from src.core.models import DiscordMessage
 from src.utils.logger import get_logger
 from src.services.listener.browser import BrowserManager
+from src.services.listener.browser_recycle import BrowserRecyclePolicy
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,10 @@ class DiscordListener:
         chrome_load_images: bool = True,
         chrome_disable_notifications: bool = True,
         chrome_mute_audio: bool = True,
-        browser_recycle_interval: float = 21600.0
+        browser_recycle_interval: float = 21600.0,
+        browser_min_available_memory_mb: float = 768.0,
+        browser_memory_check_interval: float = 15.0,
+        browser_memory_recycle_min_age: float = 600.0,
     ):
         """
         初始化Discord监听器
@@ -46,6 +50,12 @@ class DiscordListener:
         self.on_new_message = on_new_message
         self.check_interval = check_interval
         self.browser_recycle_interval = max(0.0, float(browser_recycle_interval or 0))
+        self.browser_recycle_policy = BrowserRecyclePolicy(
+            interval_seconds=self.browser_recycle_interval,
+            min_available_memory_mb=browser_min_available_memory_mb,
+            memory_check_interval_seconds=browser_memory_check_interval,
+            memory_recycle_min_age_seconds=browser_memory_recycle_min_age,
+        )
         
         # 浏览器管理器
         self.browser_manager = BrowserManager(
@@ -73,6 +83,7 @@ class DiscordListener:
         """初始化Chrome浏览器"""
         self.driver = self.browser_manager.init_chrome()
         self._browser_started_at = time.monotonic()
+        self.browser_recycle_policy.mark_browser_started()
     
     def login_discord(self):
         """登录Discord（首次需要手动登录）"""
@@ -117,10 +128,8 @@ class DiscordListener:
         self.login_discord()
         logger.info("✅ 浏览器重启完成")
 
-    def _browser_recycle_due(self) -> bool:
-        if self.browser_recycle_interval <= 0 or self._browser_started_at <= 0:
-            return False
-        return time.monotonic() - self._browser_started_at >= self.browser_recycle_interval
+    def _browser_recycle_reason(self) -> Optional[str]:
+        return self.browser_recycle_policy.recycle_reason()
 
     def _reset_dom_forward_cutoff(self) -> None:
         grace_seconds = max(2, float(self.check_interval or 1) * 2)
@@ -959,12 +968,9 @@ class DiscordListener:
             self._reset_dom_forward_cutoff()
 
         while True:
-            if self._browser_recycle_due():
-                elapsed = time.monotonic() - self._browser_started_at
-                logger.info(
-                    "Chrome browser recycle interval reached "
-                    f"({elapsed:.0f}s >= {self.browser_recycle_interval:.0f}s), rebuilding browser session"
-                )
+            recycle_reason = self._browser_recycle_reason()
+            if recycle_reason:
+                logger.info(f"{recycle_reason}, rebuilding browser session")
                 self.restart_browser()
                 self.navigate_to_channel()
                 self._reset_dom_forward_cutoff()

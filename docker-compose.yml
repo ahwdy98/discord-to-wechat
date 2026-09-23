@@ -4,8 +4,9 @@ services:
     container_name: selenium
     shm_size: "2g"
     ports:
-      - "7900:7900"  # noVNC 网页端口，可在浏览器内登录 Discord 以初始化资料
-      - "4444:4444"  # Selenium WebDriver 端口（discord-to-wechat 通过它连接）
+      # noVNC 默认只允许本机访问；远程主机可通过 NOVNC_BIND_ADDRESS 绑定私网 IP。
+      - "${NOVNC_BIND_ADDRESS:-127.0.0.1}:7900:7900"
+      # WebDriver 4444 不发布到宿主机，discord-to-wechat 通过 Docker 内网连接。
       # - "5900:5900"  # 如需原生 VNC 客户端
     environment:
       # WebDriver 会话失联后尽快释放 slot，避免 Selenium 卡住一天导致监听无法重连。

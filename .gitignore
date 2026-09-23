@@ -1,4 +1,5 @@
 config.py
+.env
 .specstory
 .cursorindexingignore
 chrome_data

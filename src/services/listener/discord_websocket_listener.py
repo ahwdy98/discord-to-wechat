@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from src.core.models import DiscordMessage
 from src.services.listener.browser import BrowserManager
+from src.services.listener.browser_recycle import BrowserRecyclePolicy
 from src.services.listener.cdp import execute_cdp_command
 from src.utils.logger import get_logger
 
@@ -36,6 +37,9 @@ class DiscordWebsocketListener:
         subscribe_channels: bool = False,
         channel_rotate_interval: float = 0.0,
         browser_recycle_interval: float = 21600.0,
+        browser_min_available_memory_mb: float = 768.0,
+        browser_memory_check_interval: float = 15.0,
+        browser_memory_recycle_min_age: float = 600.0,
     ):
         self.channel_urls = channel_urls if isinstance(channel_urls, list) else [channel_urls]
         self.on_new_message = on_new_message
@@ -44,6 +48,12 @@ class DiscordWebsocketListener:
         self.subscribe_channels = bool(subscribe_channels)
         self.channel_rotate_interval = max(0.0, float(channel_rotate_interval or 0.0))
         self.browser_recycle_interval = max(0.0, float(browser_recycle_interval or 0.0))
+        self.browser_recycle_policy = BrowserRecyclePolicy(
+            interval_seconds=self.browser_recycle_interval,
+            min_available_memory_mb=browser_min_available_memory_mb,
+            memory_check_interval_seconds=browser_memory_check_interval,
+            memory_recycle_min_age_seconds=browser_memory_recycle_min_age,
+        )
         self.channel_by_id = self._build_channel_map(self.channel_urls)
         self.guild_channels = self._build_guild_channel_map(self.channel_urls)
         self.seen_message_ids = set()
@@ -79,6 +89,7 @@ class DiscordWebsocketListener:
     def init_chrome(self):
         self.driver = self.browser_manager.init_chrome()
         self._browser_started_at = time.monotonic()
+        self.browser_recycle_policy.mark_browser_started()
         self._install_websocket_hook()
 
     def restart_browser(self):
@@ -91,10 +102,8 @@ class DiscordWebsocketListener:
         self.login_discord()
         self.navigate_to_channel()
 
-    def _browser_recycle_due(self) -> bool:
-        if self.browser_recycle_interval <= 0 or self._browser_started_at <= 0:
-            return False
-        return time.monotonic() - self._browser_started_at >= self.browser_recycle_interval
+    def _browser_recycle_reason(self) -> Optional[str]:
+        return self.browser_recycle_policy.recycle_reason()
 
     @staticmethod
     def _is_browser_session_lost(error) -> bool:
@@ -178,12 +187,9 @@ class DiscordWebsocketListener:
 
         while True:
             try:
-                if self._browser_recycle_due():
-                    elapsed = time.monotonic() - self._browser_started_at
-                    logger.info(
-                        "Chrome browser recycle interval reached "
-                        f"({elapsed:.0f}s >= {self.browser_recycle_interval:.0f}s), rebuilding browser session"
-                    )
+                recycle_reason = self._browser_recycle_reason()
+                if recycle_reason:
+                    logger.info(f"{recycle_reason}, rebuilding browser session")
                     self.restart_browser()
                     continue
 

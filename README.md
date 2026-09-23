@@ -165,6 +165,7 @@ docker compose up -d --build
 - 在 noVNC 页面中打开浏览器，访问 Discord 并登录
 - 登录成功后，数据会自动保存到 `selenium_data` 目录
 - 后续重启无需再次登录
+- Selenium WebDriver 的 `4444` 端口只在 Docker 内网开放，不需要映射到宿主机
 
 4. **查看日志**
 
@@ -180,7 +181,8 @@ docker compose down
 
 **说明（为什么本地不用 host 网络）**：
 
-- `docker-compose.yml` 使用默认 bridge 网络并通过 `ports` 暴露 noVNC（`http://localhost:7900`）。
+- `docker-compose.yml` 使用默认 bridge 网络，noVNC 默认仅绑定到 `127.0.0.1:7900`。
+- 远程服务器可在不提交的 `.env` 中设置 `NOVNC_BIND_ADDRESS=私网IP`，只通过私网访问 noVNC。
 - 在 macOS 的 Docker Desktop 上不建议使用 `network_mode: host`（行为不等价于 Linux，且容易导致 `ports:` 映射不可用）。
 
 ---

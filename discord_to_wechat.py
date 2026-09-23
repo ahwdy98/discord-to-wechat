@@ -62,7 +62,10 @@ class DiscordToWechatBridge:
                 last_messages_interval=self.config.websocket_last_messages_interval,
                 subscribe_channels=self.config.websocket_subscribe_channels,
                 channel_rotate_interval=self.config.websocket_channel_rotate_interval,
-                browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds
+                browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds,
+                browser_min_available_memory_mb=self.config.discord_browser_min_available_memory_mb,
+                browser_memory_check_interval=self.config.discord_browser_memory_check_interval_seconds,
+                browser_memory_recycle_min_age=self.config.discord_browser_memory_recycle_min_age_seconds,
             )
 
         logger.info("Using Discord browser-tabs polling listener mode")
@@ -74,7 +77,10 @@ class DiscordToWechatBridge:
             chrome_load_images=self.config.chrome_load_images,
             chrome_disable_notifications=self.config.chrome_disable_notifications,
             chrome_mute_audio=self.config.chrome_mute_audio,
-            browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds
+            browser_recycle_interval=self.config.discord_browser_recycle_interval_seconds,
+            browser_min_available_memory_mb=self.config.discord_browser_min_available_memory_mb,
+            browser_memory_check_interval=self.config.discord_browser_memory_check_interval_seconds,
+            browser_memory_recycle_min_age=self.config.discord_browser_memory_recycle_min_age_seconds,
         )
     
     def _create_sender(self) -> MessageSender:
@@ -369,6 +375,14 @@ def print_startup_info():
         logger.info(f"   浏览器主动回收: {app_config.discord_browser_recycle_interval_seconds:g} 秒")
     else:
         logger.info("   浏览器主动回收: 关闭")
+    if app_config.discord_browser_min_available_memory_mb > 0:
+        logger.info(
+            "   低内存提前回收: "
+            f"可用内存低于 {app_config.discord_browser_min_available_memory_mb:g} MiB，"
+            f"浏览器最短运行 {app_config.discord_browser_memory_recycle_min_age_seconds:g} 秒"
+        )
+    else:
+        logger.info("   低内存提前回收: 关闭")
     logger.info(f"   异步发送: {'是' if app_config.async_send_enabled else '否'}")
     if app_config.async_send_enabled:
         logger.info(f"   发送Worker: {app_config.send_workers}, 队列大小: {app_config.send_queue_size}")
