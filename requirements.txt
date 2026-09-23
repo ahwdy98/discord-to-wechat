@@ -1,6 +1,9 @@
 # Selenium相关
 selenium==4.15.2
 
+# Discord 用户 Gateway（gateway_user 模式）
+discord.py-self==2.1.0
+
 # 微信个人号
 itchat-uos==1.5.0.dev0
 pillow>=11.1.0

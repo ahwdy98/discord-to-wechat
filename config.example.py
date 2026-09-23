@@ -145,7 +145,11 @@ DISCORD_DOM_RECOVERY_LOOKBACK_SECONDS = 86400
 # Discord listener mode:
 # - "browser_tabs": old stable mode, opens one Discord tab per channel.
 # - "websocket": low-resource realtime mode, opens one Discord page and listens to Gateway frames.
+# - "gateway_user": lowest-resource realtime mode powered by discord.py-self; no browser required.
+#   User account automation violates Discord ToS. Put DISCORD_USER_TOKEN in .env, never commit it.
 DISCORD_LISTENER_MODE = "browser_tabs"
+GATEWAY_RECOVERY_MAX_MESSAGES = 10
+GATEWAY_RECOVERY_LOOKBACK_SECONDS = 86400
 WEBSOCKET_POLL_INTERVAL = 0.2
 WEBSOCKET_LAST_MESSAGES_INTERVAL = 2.0  # websocket 模式下请求各频道最后消息的兜底间隔；设为 0 可关闭
 WEBSOCKET_SUBSCRIBE_CHANNELS = False  # 实验性主动频道订阅；若出现 gatewaySockets=0/频繁重连，保持 False

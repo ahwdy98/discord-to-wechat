@@ -19,6 +19,7 @@ from src.utils.logger import get_logger, setup_logger
 # 导入业务模块
 from src.services.listener.discord_listener import DiscordListener
 from src.services.listener.discord_websocket_listener import DiscordWebsocketListener
+from src.services.listener.discord_gateway_user_listener import DiscordGatewayUserListener
 from src.services.sender.base import MessageSender
 from src.services.sender.wechat import WechatSender
 from src.services.sender.working_wechat import WorkingWechatSender
@@ -31,7 +32,7 @@ from src.services.sender.async_sender import AsyncMessageSender
 logger = setup_logger()
 
 SUPPORTED_SENDER_TYPES = ["wechat", "enterprise_wechat", "feishu", "webhook_server"]
-SUPPORTED_LISTENER_MODES = ["browser_tabs", "websocket"]
+SUPPORTED_LISTENER_MODES = ["browser_tabs", "websocket", "gateway_user"]
 
 
 class DiscordToWechatBridge:
@@ -49,6 +50,16 @@ class DiscordToWechatBridge:
         self.listener = self._create_listener()
 
     def _create_listener(self):
+        if self.config.discord_listener_mode == "gateway_user":
+            logger.info("Using Discord user Gateway listener mode (no browser)")
+            return DiscordGatewayUserListener(
+                channel_urls=self.config.discord_channel_urls,
+                on_new_message=self._on_new_message,
+                token=self.config.discord_user_token,
+                recovery_max_messages=self.config.gateway_recovery_max_messages,
+                recovery_lookback_seconds=self.config.gateway_recovery_lookback_seconds,
+            )
+
         if self.config.discord_listener_mode == "websocket":
             logger.info("Using Discord WebSocket listener mode (single page, event driven)")
             return DiscordWebsocketListener(
@@ -212,21 +223,35 @@ class DiscordToWechatBridge:
             # 启动发送器的保持活跃线程（如果需要）
             self.sender.keep_alive()
             
-            # 步骤 2: 初始化浏览器
+            gateway_user_mode = self.config.discord_listener_mode == "gateway_user"
+
+            # 步骤 2: 初始化监听器
             logger.info("\n" + "=" * 50)
-            logger.info("🔧 步骤 2/4: 初始化Chrome浏览器...")
+            logger.info(
+                "🔧 步骤 2/4: 初始化Discord Gateway..."
+                if gateway_user_mode
+                else "🔧 步骤 2/4: 初始化Chrome浏览器..."
+            )
             logger.info("=" * 50)
             self.listener.init_chrome()
             
             # 步骤 3: 登录Discord
             logger.info("\n" + "=" * 50)
-            logger.info("🔐 步骤 3/4: 登录Discord...")
+            logger.info(
+                "🔐 步骤 3/4: 准备Discord认证..."
+                if gateway_user_mode
+                else "🔐 步骤 3/4: 登录Discord..."
+            )
             logger.info("=" * 50)
             self.listener.login_discord()
             
             # 步骤 4: 打开频道并开始监控
             logger.info("\n" + "=" * 50)
-            logger.info("📱 步骤 4/4: 打开Discord频道并开始监控...")
+            logger.info(
+                "📡 步骤 4/4: 连接Discord Gateway并开始监控..."
+                if gateway_user_mode
+                else "📱 步骤 4/4: 打开Discord频道并开始监控..."
+            )
             logger.info("=" * 50)
             self.listener.navigate_to_channel()
             
@@ -276,6 +301,18 @@ def validate_config():
 
     if app_config.websocket_last_messages_interval < 0:
         logger.error("❌ WEBSOCKET_LAST_MESSAGES_INTERVAL 必须大于等于 0")
+        return False
+
+    if app_config.discord_listener_mode == "gateway_user" and not app_config.discord_user_token:
+        logger.error("❌ gateway_user 模式需要通过 DISCORD_USER_TOKEN 环境变量配置用户 token")
+        return False
+
+    if app_config.gateway_recovery_max_messages < 1:
+        logger.error("❌ GATEWAY_RECOVERY_MAX_MESSAGES 必须大于等于 1")
+        return False
+
+    if app_config.gateway_recovery_lookback_seconds < 0:
+        logger.error("❌ GATEWAY_RECOVERY_LOOKBACK_SECONDS 必须大于等于 0")
         return False
     if app_config.websocket_channel_rotate_interval < 0:
         logger.error("❌ WEBSOCKET_CHANNEL_ROTATE_INTERVAL 必须大于等于 0")
@@ -368,21 +405,29 @@ def print_startup_info():
     
     # 运行配置
     logger.info(f"\n⚙️  运行配置:")
-    logger.info(f"   检查间隔: {app_config.check_interval} 秒")
-    logger.info(f"   无头模式: {'是' if app_config.headless_mode else '否'}")
-    logger.info(f"   加载图片: {'是' if app_config.chrome_load_images else '否'}")
-    if app_config.discord_browser_recycle_interval_seconds > 0:
-        logger.info(f"   浏览器主动回收: {app_config.discord_browser_recycle_interval_seconds:g} 秒")
-    else:
-        logger.info("   浏览器主动回收: 关闭")
-    if app_config.discord_browser_min_available_memory_mb > 0:
+    logger.info(f"   Discord监听模式: {app_config.discord_listener_mode}")
+    if app_config.discord_listener_mode == "gateway_user":
         logger.info(
-            "   低内存提前回收: "
-            f"可用内存低于 {app_config.discord_browser_min_available_memory_mb:g} MiB，"
-            f"浏览器最短运行 {app_config.discord_browser_memory_recycle_min_age_seconds:g} 秒"
+            "   Gateway启动恢复: "
+            f"最多 {app_config.gateway_recovery_max_messages} 条，"
+            f"回看 {app_config.gateway_recovery_lookback_seconds:g} 秒"
         )
     else:
-        logger.info("   低内存提前回收: 关闭")
+        logger.info(f"   检查间隔: {app_config.check_interval} 秒")
+        logger.info(f"   无头模式: {'是' if app_config.headless_mode else '否'}")
+        logger.info(f"   加载图片: {'是' if app_config.chrome_load_images else '否'}")
+        if app_config.discord_browser_recycle_interval_seconds > 0:
+            logger.info(f"   浏览器主动回收: {app_config.discord_browser_recycle_interval_seconds:g} 秒")
+        else:
+            logger.info("   浏览器主动回收: 关闭")
+        if app_config.discord_browser_min_available_memory_mb > 0:
+            logger.info(
+                "   低内存提前回收: "
+                f"可用内存低于 {app_config.discord_browser_min_available_memory_mb:g} MiB，"
+                f"浏览器最短运行 {app_config.discord_browser_memory_recycle_min_age_seconds:g} 秒"
+            )
+        else:
+            logger.info("   低内存提前回收: 关闭")
     logger.info(f"   异步发送: {'是' if app_config.async_send_enabled else '否'}")
     if app_config.async_send_enabled:
         logger.info(f"   发送Worker: {app_config.send_workers}, 队列大小: {app_config.send_queue_size}")

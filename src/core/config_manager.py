@@ -9,6 +9,12 @@ def _as_float(value, default: float) -> float:
     except (TypeError, ValueError):
         return default
 
+def _as_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 class Config:
     """配置管理类"""
     
@@ -29,6 +35,9 @@ class Config:
         self.send_queue_size: int = 1000
         self.async_send_confirm_timeout: float = 30.0
         self.discord_listener_mode: str = "browser_tabs"
+        self.discord_user_token: str = ""
+        self.gateway_recovery_max_messages: int = 10
+        self.gateway_recovery_lookback_seconds: float = 86400.0
         self.websocket_poll_interval: float = 0.2
         self.websocket_last_messages_interval: float = 2.0
         self.websocket_subscribe_channels: bool = False
@@ -78,6 +87,27 @@ class Config:
                 self.send_queue_size = getattr(config_module, 'SEND_QUEUE_SIZE', 1000)
                 self.async_send_confirm_timeout = _as_float(getattr(config_module, 'ASYNC_SEND_CONFIRM_TIMEOUT', 30.0), 30.0)
                 self.discord_listener_mode = str(getattr(config_module, 'DISCORD_LISTENER_MODE', 'browser_tabs')).strip().lower()
+                self.discord_user_token = str(
+                    os.getenv('DISCORD_USER_TOKEN')
+                    or getattr(config_module, 'DISCORD_USER_TOKEN', '')
+                    or ''
+                ).strip()
+                self.gateway_recovery_max_messages = _as_int(
+                    getattr(
+                        config_module,
+                        'GATEWAY_RECOVERY_MAX_MESSAGES',
+                        os.getenv('GATEWAY_RECOVERY_MAX_MESSAGES', 10)
+                    ),
+                    10
+                )
+                self.gateway_recovery_lookback_seconds = _as_float(
+                    getattr(
+                        config_module,
+                        'GATEWAY_RECOVERY_LOOKBACK_SECONDS',
+                        os.getenv('GATEWAY_RECOVERY_LOOKBACK_SECONDS', 86400.0)
+                    ),
+                    86400.0
+                )
                 self.websocket_poll_interval = _as_float(getattr(config_module, 'WEBSOCKET_POLL_INTERVAL', 0.2), 0.2)
                 self.websocket_last_messages_interval = _as_float(getattr(config_module, 'WEBSOCKET_LAST_MESSAGES_INTERVAL', 2.0), 2.0)
                 self.websocket_subscribe_channels = getattr(config_module, 'WEBSOCKET_SUBSCRIBE_CHANNELS', False)

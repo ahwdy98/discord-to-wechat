@@ -97,7 +97,23 @@ ASYNC_SEND_ENABLED = True
 SEND_WORKERS = 1
 SEND_QUEUE_SIZE = 1000
 
-# 低资源实时监听：只打开 1 个 Discord 页面，通过 WebSocket 事件收消息
+# 最低资源实时监听：直接连接 Discord Gateway，不启动 Chrome/Selenium
+DISCORD_LISTENER_MODE = "gateway_user"
+GATEWAY_RECOVERY_MAX_MESSAGES = 10
+GATEWAY_RECOVERY_LOOKBACK_SECONDS = 86400
+```
+
+`gateway_user` 还需要在不提交 Git 的 `.env` 中设置：
+
+```dotenv
+DISCORD_USER_TOKEN=你的Discord用户Token
+```
+
+该模式使用 `discord.py-self`。Discord 明确禁止自动化用户账号，存在账号封禁风险；建议使用权限最小化的独立账号。它会实时接收 Gateway 消息，启动或重连时从每个频道最多恢复 10 条、回看 24 小时；若 24 小时内没有消息，则保底读取最新一条。
+
+原有单页面浏览器监听仍可作为回退：
+
+```python
 DISCORD_LISTENER_MODE = "websocket"
 WEBSOCKET_POLL_INTERVAL = 0.2
 WEBSOCKET_LAST_MESSAGES_INTERVAL = 2.0
@@ -127,7 +143,7 @@ pip install -r requirements.txt
 python discord_to_wechat.py
 ```
 
-首次运行会打开浏览器窗口，需要手动登录 Discord。
+`gateway_user` 模式不会打开浏览器。`browser_tabs` 或 `websocket` 模式首次运行会打开浏览器窗口，需要手动登录 Discord。
 
 如果启动时报 `Unable to locate or obtain driver for chrome`，说明 Selenium 没有拿到驱动：
 
@@ -144,6 +160,16 @@ python discord_to_wechat.py
 - Docker & Docker Compose
 
 **步骤**：
+
+`gateway_user` 模式直接启动，不需要 Selenium 或 noVNC：
+
+```bash
+cp .env.example .env
+# 编辑 .env，设置 DISCORD_USER_TOKEN
+docker compose up -d --build
+```
+
+使用 `browser_tabs` 或 `websocket` 浏览器模式时执行以下步骤：
 
 1. **初始化数据目录**
 
@@ -193,6 +219,14 @@ docker compose down
 
 **步骤**：
 
+`gateway_user` 模式只需配置 `.env` 后启动：
+
+```bash
+docker compose up -d --build
+```
+
+以下步骤仅用于 `browser_tabs` 或 `websocket` 浏览器模式。
+
 1. **初始化数据目录（首次部署）**
 
 ```bash
@@ -204,7 +238,7 @@ bash bash/init_selenium.sh
 - **A. 服务器是透明代理（v2ray / TUN / iptables）并希望容器直接复用宿主网络**（推荐这种场景）：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d
+docker compose --profile browser -f docker-compose.yml -f docker-compose.linux.yml up -d
 ```
 
 说明：
@@ -220,10 +254,10 @@ docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d
 - `CHROME_PROXY=http://127.0.0.1:7890`（或你的代理地址）
 - `NO_PROXY=selenium,localhost,127.0.0.1`（关键：避免 WebDriver 连接 selenium 也走代理）
 
-然后按方式二启动即可：
+然后按浏览器 profile 启动即可：
 
 ```bash
-docker compose up -d --build
+docker compose --profile browser up -d --build
 ```
 
 ## 常见问题 (FAQ)
@@ -306,7 +340,7 @@ docker compose up -d --build discord-to-wechat
 docker compose down
 mv selenium_data selenium_data.bak.$(date +%Y%m%d%H%M%S)
 bash bash/init_selenium.sh
-docker compose up -d --build
+docker compose --profile browser up -d --build
 ```
 
 ## 说明

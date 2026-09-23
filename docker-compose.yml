@@ -1,5 +1,6 @@
 services:
   selenium:
+    profiles: ["browser"]
     image: ${SELENIUM_IMAGE:-selenium/standalone-chrome:4.45.0}
     container_name: selenium
     shm_size: "2g"
@@ -67,6 +68,8 @@ services:
       - TZ=Asia/Shanghai
       # 在 docker compose 默认网络里，使用服务名访问 selenium
       - SELENIUM_REMOTE_URL=http://selenium:4444/wd/hub
+      # gateway_user 模式使用；建议仅在 .env 中设置，不要写入 config.py 或提交 Git。
+      - DISCORD_USER_TOKEN=${DISCORD_USER_TOKEN:-}
       # 可选：为“程序自身的 HTTP 请求/下载”等设置代理（不影响 Chrome，Chrome 走下面的 CHROME_PROXY）
       # - HTTP_PROXY=http://127.0.0.1:7890
       # - HTTPS_PROXY=http://127.0.0.1:7890
@@ -77,8 +80,6 @@ services:
     volumes:
       - ./config.py:/app/config.py:ro
     depends_on:
-      selenium:
-        condition: service_healthy
       webhook-server:
         condition: service_healthy
     restart: unless-stopped
