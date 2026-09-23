@@ -32,9 +32,9 @@ class DiscordListener:
         chrome_disable_notifications: bool = True,
         chrome_mute_audio: bool = True,
         browser_recycle_interval: float = 21600.0,
-        browser_min_available_memory_mb: float = 768.0,
-        browser_memory_check_interval: float = 15.0,
-        browser_memory_recycle_min_age: float = 600.0,
+        browser_min_available_memory_mb: float = 256.0,
+        browser_memory_check_interval: float = 10.0,
+        browser_memory_recycle_min_age: float = 300.0,
     ):
         """
         初始化Discord监听器

@@ -39,9 +39,9 @@ class Config:
         self.chrome_disable_notifications: bool = True
         self.chrome_mute_audio: bool = True
         self.discord_browser_recycle_interval_seconds: float = 21600.0
-        self.discord_browser_min_available_memory_mb: float = 768.0
-        self.discord_browser_memory_check_interval_seconds: float = 15.0
-        self.discord_browser_memory_recycle_min_age_seconds: float = 600.0
+        self.discord_browser_min_available_memory_mb: float = 256.0
+        self.discord_browser_memory_check_interval_seconds: float = 10.0
+        self.discord_browser_memory_recycle_min_age_seconds: float = 300.0
         
         self.load_config()
 
@@ -99,25 +99,25 @@ class Config:
                     getattr(
                         config_module,
                         'DISCORD_BROWSER_MIN_AVAILABLE_MEMORY_MB',
-                        os.getenv('DISCORD_BROWSER_MIN_AVAILABLE_MEMORY_MB', 768.0)
+                        os.getenv('DISCORD_BROWSER_MIN_AVAILABLE_MEMORY_MB', 256.0)
                     ),
-                    768.0
+                    256.0
                 )
                 self.discord_browser_memory_check_interval_seconds = _as_float(
                     getattr(
                         config_module,
                         'DISCORD_BROWSER_MEMORY_CHECK_INTERVAL_SECONDS',
-                        os.getenv('DISCORD_BROWSER_MEMORY_CHECK_INTERVAL_SECONDS', 15.0)
+                        os.getenv('DISCORD_BROWSER_MEMORY_CHECK_INTERVAL_SECONDS', 10.0)
                     ),
-                    15.0
+                    10.0
                 )
                 self.discord_browser_memory_recycle_min_age_seconds = _as_float(
                     getattr(
                         config_module,
                         'DISCORD_BROWSER_MEMORY_RECYCLE_MIN_AGE_SECONDS',
-                        os.getenv('DISCORD_BROWSER_MEMORY_RECYCLE_MIN_AGE_SECONDS', 600.0)
+                        os.getenv('DISCORD_BROWSER_MEMORY_RECYCLE_MIN_AGE_SECONDS', 300.0)
                     ),
-                    600.0
+                    300.0
                 )
                 self._derive_discord_channels_from_routes()
         except Exception as e:

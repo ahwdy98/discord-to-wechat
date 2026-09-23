@@ -20,9 +20,9 @@ class BrowserRecyclePolicy:
     def __init__(
         self,
         interval_seconds: float = 21600.0,
-        min_available_memory_mb: float = 768.0,
-        memory_check_interval_seconds: float = 15.0,
-        memory_recycle_min_age_seconds: float = 600.0,
+        min_available_memory_mb: float = 256.0,
+        memory_check_interval_seconds: float = 10.0,
+        memory_recycle_min_age_seconds: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
         memory_reader: Callable[[], Optional[float]] = read_available_memory_mb,
     ):
